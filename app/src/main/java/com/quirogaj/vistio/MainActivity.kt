@@ -52,7 +52,17 @@ open class MainActivity : ComponentActivity() {
     }
 
     private val model: CameraViewModel by viewModels {
-        viewModelFactory { initializer { CameraViewModel(CameraRepository(), CameraProfileStore(applicationContext), RtspPlayer(applicationContext)) } }
+        viewModelFactory {
+            initializer {
+                CameraViewModel(
+                    CameraRepository(),
+                    CameraProfileStore(applicationContext),
+                    RtspPlayer(applicationContext),
+                    playbackPreferences = getSharedPreferences(if (isTv) "tv_playback" else "mobile_playback", MODE_PRIVATE),
+                    audioEnabledByDefault = isTv,
+                )
+            }
+        }
     }
 
     private val updates: UpdatesViewModel by viewModels {
@@ -124,6 +134,7 @@ open class MainActivity : ComponentActivity() {
                         disconnect = model::disconnect,
                         fullscreen = model::setFullscreen,
                         capture = model::takeSnapshot,
+                        toggleAudio = model::toggleAudio,
                         onVideoSurface = model::onVideoSurface,
                         reloadSettings = model::loadSettings,
                         changeSettings = model::changeSettings,

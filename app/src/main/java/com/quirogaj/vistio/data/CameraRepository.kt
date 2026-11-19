@@ -63,6 +63,14 @@ internal class CameraRepository {
             }
         }
 
+        fun streamAudio(onPlaying: () -> Unit) {
+            val active = open("/audio", 8_000)
+            if (!active.contentType.orEmpty().substringBefore(';').trim().equals("audio/wav", true)) {
+                throw IOException("El servidor no devolvió audio WAV.")
+            }
+            active.inputStream.use { input -> CameraAudioPlayer.play(input, { !cancelled }, onPlaying) }
+        }
+
         fun snapshot(): Snapshot {
             val active = open("/video/snapshot", 20_000)
             if (!active.contentType.orEmpty().substringBefore(';').trim().equals("image/jpeg", true)) {

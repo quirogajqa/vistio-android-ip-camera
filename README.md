@@ -2,13 +2,13 @@
 
 Vistio muestra en Android y Android TV el video en directo de un teléfono que ejecuta [DigitallyRefined Android IP Camera](https://github.com/DigitallyRefined/android-ip-camera). Ambos dispositivos deben estar en la misma red local. El mismo APK detecta Android TV y adapta la interfaz al mando.
 
-**[Descargar la última versión](https://github.com/quirogajqa/vistio-android-ip-camera/releases/latest)** · Android 8.0 o posterior · [Licencia GPLv3](LICENSE)
+**[Descargar el APK](https://github.com/quirogajqa/vistio-android-ip-camera/releases/latest/download/vistio.apk)** · [Notas de la última versión](https://github.com/quirogajqa/vistio-android-ip-camera/releases/latest) · Android 8.0 o posterior · [Licencia GPLv3](LICENSE)
 
 ## Primeros pasos
 
 1. Inicia **Android IP Camera** en el teléfono que hará de cámara y copia la dirección que muestra.
 2. En Vistio, abre **Mis cámaras → Agregar cámara**. Introduce la dirección y, si corresponde, el usuario. Guarda el perfil.
-3. Selecciona la cámara para ver el directo en pantalla completa. Toca el video o pulsa **Atrás** para mostrar los controles. **Captura** permite guardar un JPEG.
+3. Selecciona la cámara para ver el directo en pantalla completa. En el móvil, toca el video para alternar entre pantalla completa y los controles. En TV, pulsa **Atrás** para mostrar los controles. **Captura** permite guardar un JPEG.
 4. Abre **Configurar cámara** para editar o eliminar el perfil, elegir la cámara frontal o trasera y cambiar resolución, rotación o espejo. Los ajustes que aplica el servidor también afectan a otros clientes conectados.
 
 En Android 17, concede a Vistio el permiso de red local cuando se solicite.
@@ -35,6 +35,10 @@ HTTP transmite el video y las credenciales sin cifrar. Si activas HTTPS en el se
 
 Vistio vuelve a MJPEG si el flujo preferido no está disponible. El visor indica el protocolo activo al salir de pantalla completa.
 
+### Audio del directo
+
+En los controles del visor, pulsa **Activar audio** para escuchar el micrófono de Android IP Camera y **Silenciar audio** para apagarlo. El servidor necesita permiso de micrófono. El audio arranca activado en TV y silenciado en móvil hasta que cambies la opción. Vistio recuerda la elección en cada dispositivo y detiene la reproducción al desconectar o pasar a segundo plano.
+
 ## Actualizaciones
 
 Abre **Mis cámaras → Actualizaciones** para buscar, descargar e instalar una versión publicada en GitHub Releases. Vistio también comprueba si hay novedades cuando han pasado 14 días desde la última comprobación exitosa. Android puede pedir permiso para instalar desde Vistio y siempre muestra su propia confirmación.
@@ -57,11 +61,11 @@ VISTIO_UPDATE_GITHUB_REPOSITORY=vistio-android-ip-camera
 Para publicar una versión, compila con un número de tres partes superior al anterior. Firma el APK con la misma clave que la última publicación y ejecuta:
 
 ```powershell
-.\gradlew.bat :app:assembleRelease "-PappVersionName=1.7.2"
+.\gradlew.bat :app:assembleRelease "-PappVersionName=1.7.3"
 .\tools\Prepare-Update.ps1 -ApkPath .\vistio-firmado.apk
 ```
 
-Adjunta el APK y `update.json` de `build/update-release` a la Release correspondiente. Antes de abrir el instalador, Vistio comprueba el tamaño, SHA-256, paquete, versión y firma.
+Adjunta el APK numerado y `update.json` de `build/update-release` a la Release correspondiente. Añade una copia del APK como `vistio.apk` para mantener el enlace fijo de Downloader. Antes de abrir el instalador, Vistio comprueba el tamaño, SHA-256, paquete, versión y firma.
 
 ## Licencia
 

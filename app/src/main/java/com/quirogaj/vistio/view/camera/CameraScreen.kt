@@ -34,6 +34,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.quirogaj.vistio.BuildConfig
 import com.quirogaj.vistio.data.CameraControl
 import com.quirogaj.vistio.data.CameraProfile
+import com.quirogaj.vistio.viewmodel.CameraAudioStatus
 import com.quirogaj.vistio.viewmodel.CameraForm
 import com.quirogaj.vistio.viewmodel.CameraUiState
 import com.quirogaj.vistio.viewmodel.ConnectionStatus
@@ -59,6 +60,7 @@ internal fun CameraScreen(
     disconnect: () -> Unit,
     fullscreen: (Boolean) -> Unit,
     capture: () -> Unit,
+    toggleAudio: () -> Unit,
     onVideoSurface: (VideoSurface, Boolean) -> Unit,
     reloadSettings: () -> Unit,
     changeSettings: (CameraControl) -> Unit,
@@ -164,7 +166,7 @@ internal fun CameraScreen(
                 }
             }
             else -> PlayerCard(
-                state, body, isTv, capture, { fullscreen(!state.fullscreen) }, onVideoSurface,
+                state, body, isTv, capture, toggleAudio, { fullscreen(!state.fullscreen) }, onVideoSurface,
                 reconnect = { connect(selected, false) }, disconnect = disconnect, showProfiles = showProfiles,
                 configure = { connect(selected, true) },
                 deleteCamera = { deleteProfile(selected.id) },
@@ -234,6 +236,7 @@ private fun PlayerCard(
     modifier: Modifier,
     isTv: Boolean,
     capture: () -> Unit,
+    toggleAudio: () -> Unit,
     fullscreen: () -> Unit,
     onVideoSurface: (VideoSurface, Boolean) -> Unit,
     reconnect: () -> Unit,
@@ -264,11 +267,14 @@ private fun PlayerCard(
             } else {
                 Video(state.frame, Modifier.fillMaxSize())
             }
-            if (state.fullscreen) {
+            if (state.fullscreen || (!isTv && live)) {
                 Box(
                     Modifier.matchParentSize()
                         .then(if (isTv && (live || state.status == ConnectionStatus.Connecting)) Modifier.focusRequester(controlFocus) else Modifier)
-                        .clickable(onClickLabel = "Salir de pantalla completa", onClick = fullscreen),
+                        .clickable(
+                            onClickLabel = if (state.fullscreen) "Salir de pantalla completa" else "Abrir pantalla completa",
+                            onClick = fullscreen,
+                        ),
                 )
             }
             if (state.status == ConnectionStatus.Connecting) {
@@ -308,6 +314,11 @@ private fun PlayerCard(
     }
     val canCapture = live && !state.capturing && !state.settingsBusy
     val captureLabel = if (state.capturing) "Capturando…" else "Captura"
+    val audioLabel = when (state.audioStatus) {
+        CameraAudioStatus.Off -> if (state.audioEnabled) "Desactivar audio" else "Activar audio"
+        CameraAudioStatus.Connecting -> "Cancelar audio"
+        CameraAudioStatus.Playing -> "Silenciar audio"
+    }
     if (isTv) {
         Row(
             modifier.background(colors.background).padding(horizontal = TvHorizontalMargin, vertical = TvVerticalMargin),
@@ -333,6 +344,7 @@ private fun PlayerCard(
                         else -> CameraAction(true, "Reintentar", reconnect, mainAction)
                     }
                     if (live) {
+                        CameraAction(true, audioLabel, toggleAudio, Modifier.fillMaxWidth())
                         CameraAction(true, captureLabel, capture, Modifier.fillMaxWidth(), canCapture)
                     }
                     CameraAction(true, "Configurar cámara", configure, Modifier.fillMaxWidth())
@@ -368,7 +380,7 @@ private fun PlayerCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     CameraAction(false, captureLabel, capture, enabled = canCapture)
-                    CameraAction(false, "Pantalla completa", fullscreen, enabled = live)
+                    if (live) CameraAction(false, audioLabel, toggleAudio)
                     if (live || state.status == ConnectionStatus.Connecting) {
                         CameraAction(false, "Desconectar", disconnect)
                     }

@@ -1,5 +1,6 @@
 package com.quirogaj.vistio.viewmodel
 
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.view.Surface
 import androidx.media3.common.Player
@@ -43,6 +44,9 @@ import javax.net.ssl.SSLException
 import javax.net.ssl.SSLPeerUnverifiedException
 
 internal enum class ConnectionStatus { Disconnected, Connecting, Live, Error }
+internal enum class CameraAudioStatus { Off, Connecting, Playing }
+
+private const val AUDIO_ENABLED = "audio_enabled"
 
 internal data class CameraForm(
     val id: String? = null,
@@ -74,6 +78,8 @@ internal data class CameraUiState(
     val usingRtsp: Boolean = false,
     val avcSize: AvcSize? = null,
     val fullscreen: Boolean = false,
+    val audioStatus: CameraAudioStatus = CameraAudioStatus.Off,
+    val audioEnabled: Boolean = false,
     val capturing: Boolean = false,
     val snapshot: Snapshot? = null,
     val notice: String? = null,
@@ -86,9 +92,13 @@ internal class CameraViewModel(
     private val repository: CameraRepository,
     private val profileStore: CameraProfileStore,
     private val rtspPlayer: RtspPlayer,
+    private val playbackPreferences: SharedPreferences,
+    audioEnabledByDefault: Boolean,
 ) : ViewModel() {
     private val connectionCloser = Executors.newCachedThreadPool()
-    private val mutableState = MutableStateFlow(CameraUiState())
+    private val mutableState = MutableStateFlow(
+        CameraUiState(audioEnabled = playbackPreferences.getBoolean(AUDIO_ENABLED, audioEnabledByDefault)),
+    )
     val state = mutableState.asStateFlow()
     private var stream: CameraRepository.Request? = null
     private var videoSurface: Surface? = null
@@ -97,6 +107,8 @@ internal class CameraViewModel(
     private var rtspTimeout: Job? = null
     private var rtspCatchUp: Job? = null
     private var activeRtspPort: Int? = null
+    private var audio: CameraRepository.Request? = null
+    private var autoAudioPending = false
     private var capture: CameraRepository.Request? = null
     private var endpoint: CameraEndpoint? = null
     private var settingsRequest: CameraRepository.Request? = null
@@ -389,6 +401,7 @@ internal class CameraViewModel(
         disconnect()
         endpoint = camera
         activeRtspPort = rtspPort
+        autoAudioPending = state.value.audioEnabled
         mutableState.update {
             it.copy(
                 status = ConnectionStatus.Connecting,
@@ -469,6 +482,7 @@ internal class CameraViewModel(
                     mutableState.update {
                         it.copy(status = ConnectionStatus.Live, statusText = "En directo · RTSPS", avcSize = size)
                     }
+                    startPreferredAudio()
                 }
             }, ::failed)
             val player = rtspSession ?: return
@@ -518,6 +532,7 @@ internal class CameraViewModel(
                             viewModelScope.launch {
                                 if (stream === request) {
                                     mutableState.update { it.copy(status = ConnectionStatus.Live, statusText = "En directo · H.264", avcSize = size) }
+                                    startPreferredAudio()
                                 }
                             }
                         }
@@ -573,6 +588,7 @@ internal class CameraViewModel(
                                 mutableState.update {
                                     it.copy(status = ConnectionStatus.Live, statusText = "En directo · MJPEG", frame = bitmap)
                                 }
+                                startPreferredAudio()
                             }
                             framePending.set(false)
                         }
@@ -594,6 +610,8 @@ internal class CameraViewModel(
     }
 
     fun disconnect() {
+        autoAudioPending = false
+        stopAudio()
         connectionSequence++
         releaseRtsp()
         activeRtspPort = null
@@ -610,6 +628,60 @@ internal class CameraViewModel(
                 frame = null, usingH264 = false, usingRtsp = false, avcSize = null, fullscreen = false, capturing = false, snapshot = null, passwordPrompt = null,
                 settings = null, settingsBusy = false, settingsError = null, certificatePrompt = null)
         }
+    }
+
+    private fun startPreferredAudio() {
+        if (!autoAudioPending) return
+        autoAudioPending = false
+        startAudio()
+    }
+
+    fun toggleAudio() {
+        if (state.value.status != ConnectionStatus.Live) return
+        val enable = !state.value.audioEnabled
+        playbackPreferences.edit().putBoolean(AUDIO_ENABLED, enable).apply()
+        mutableState.update { it.copy(audioEnabled = enable) }
+        if (enable) startAudio() else stopAudio()
+    }
+
+    private fun startAudio() {
+        if (audio != null) return
+        val camera = endpoint ?: return
+        if (state.value.status != ConnectionStatus.Live) return
+        val request = repository.request(camera)
+        audio = request
+        mutableState.update { it.copy(audioStatus = CameraAudioStatus.Connecting) }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    request.streamAudio {
+                        viewModelScope.launch {
+                            if (audio === request) mutableState.update { it.copy(audioStatus = CameraAudioStatus.Playing) }
+                        }
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (audio === request) {
+                    val description = if (error is CameraResponse && error.status == 403) {
+                        "El servidor rechazó el audio. Comprueba el permiso de micrófono en Android IP Camera."
+                    } else {
+                        "No se pudo reproducir el audio de la cámara. " + message(error)
+                    }
+                    notify(description)
+                }
+            } finally {
+                if (audio === request) stopAudio()
+            }
+        }
+    }
+
+    private fun stopAudio() {
+        val current = audio ?: return
+        audio = null
+        current.cancel(connectionCloser)
+        mutableState.update { it.copy(audioStatus = CameraAudioStatus.Off) }
     }
 
     fun loadSettings() = updateSettings(null)
