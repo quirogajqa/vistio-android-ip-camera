@@ -1,4 +1,4 @@
-# Vistio 1.7.0
+# Vistio
 
 Cliente Android para ver una cámara de DigitallyRefined Android IP Camera en la red local. Requiere Android 8.0 o posterior.
 
@@ -44,14 +44,14 @@ Con el repositorio configurado, instala la primera compilación con este gestor 
 
 ### Preparar una versión
 
-Compila con appVersionName en formato MAYOR.MENOR.PARCHE y pasa el APK firmado al script:
+Compila con appVersionName en formato MAYOR.MENOR.PARCHE. Firma el APK de release con la misma clave que la versión anterior y pásalo al script:
 
-    .\gradlew.bat :app:assembleDebug "-PappVersionName=1.7.0"
-    .\tools\Prepare-Update.ps1 -ApkPath .\app\build\outputs\apk\debug\app-debug.apk
+    .\gradlew.bat :app:assembleRelease "-PappVersionName=1.7.1"
+    .\tools\Prepare-Update.ps1 -ApkPath .\vistio-firmado.apk
 
 El script genera el APK con el nombre de la versión y update.json en build/update-release. Adjunta ambos a una Release estable de GitHub. El gestor valida el tamaño, SHA-256, paquete, versión y firma del APK antes de abrir el instalador. Incrementa la versión al preparar cada actualización.
 
-En 1.7.0 se verificaron el APK firmado, el SHA-256 de update.json y el menú Actualizaciones en el Mortal T1. La descarga y la instalación desde GitHub quedan pendientes hasta disponer del repositorio y de una primera Release.
+En 1.7.0 se verificaron el APK firmado, el SHA-256 de update.json y el menú Actualizaciones en el Mortal T1. El canal público de actualizaciones utiliza los APK y metadatos de las Releases de este repositorio.
 
 ## Arquitectura
 
