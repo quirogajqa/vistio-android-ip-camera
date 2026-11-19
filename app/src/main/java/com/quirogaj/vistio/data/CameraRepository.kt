@@ -83,7 +83,7 @@ internal class CameraRepository {
         }
 
         fun settings(): CameraSettings = try {
-            val active = open("/info.json", 6000)
+            val active = open("/info.json", 8_000)
             val json = active.inputStream.use { input ->
                 val buffer = ByteArray(8192)
                 val output = ByteArrayOutputStream()

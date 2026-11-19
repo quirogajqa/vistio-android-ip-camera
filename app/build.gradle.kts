@@ -5,7 +5,7 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
-val vistioVersionName = providers.gradleProperty("appVersionName").orElse("1.7.0").get()
+val vistioVersionName = providers.gradleProperty("appVersionName").orElse("1.7.2").get()
 val versionParts = Regex("(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]?)\\.(0|[1-9][0-9]?)")
     .matchEntire(vistioVersionName)?.groupValues?.drop(1)?.map(String::toLong)
     ?: error("appVersionName debe usar el formato MAYOR.MENOR.PARCHE.")
@@ -53,6 +53,7 @@ android {
 }
 
 dependencies {
+    implementation("com.google.zxing:core:3.5.3")
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.material3)
     implementation(libs.tv.material)

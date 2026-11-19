@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.Vistio.Launch" parent="Theme.Vistio">
+        <item name="android:windowBackground">@color/vistio_splash_background</item>
+        <item name="android:windowSplashScreenBackground">@color/vistio_splash_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:statusBarColor">@color/vistio_splash_background</item>
+        <item name="android:navigationBarColor">@color/vistio_splash_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

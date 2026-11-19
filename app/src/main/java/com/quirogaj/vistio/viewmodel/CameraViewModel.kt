@@ -10,6 +10,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quirogaj.vistio.data.CameraCertificateMismatch
 import com.quirogaj.vistio.data.CameraCertificatePin
+import com.quirogaj.vistio.data.CameraCertificateOffer
+import com.quirogaj.vistio.data.inspectCameraCertificate
 import com.quirogaj.vistio.data.CameraControl
 import com.quirogaj.vistio.data.CameraSettings
 import com.quirogaj.vistio.data.CameraEndpoint
@@ -30,7 +32,9 @@ import kotlinx.coroutines.flow.update
 import java.io.EOFException
 import java.io.IOException
 import java.io.OutputStream
+import java.net.SocketException
 import java.net.SocketTimeoutException
+import org.json.JSONException
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.security.cert.CertPathValidatorException
@@ -60,6 +64,7 @@ internal data class CameraUiState(
     val editor: CameraForm? = null,
     val editorError: String? = null,
     val passwordPrompt: CameraProfile? = null,
+    val certificatePrompt: CameraCertificateOffer? = null,
     val profilesBusy: Boolean = true,
     val profilesLoadFailed: Boolean = false,
     val status: ConnectionStatus = ConnectionStatus.Disconnected,
@@ -218,7 +223,11 @@ internal class CameraViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                mutableState.update { it.copy(editorError = "No se pudo guardar el cambio en este dispositivo.") }
+                if (state.value.editor == null) {
+                    notify("No se pudo guardar el cambio en este dispositivo.")
+                } else {
+                    mutableState.update { it.copy(editorError = "No se pudo guardar el cambio en este dispositivo.") }
+                }
             } finally {
                 mutableState.update { it.copy(profilesBusy = false) }
             }
@@ -256,10 +265,39 @@ internal class CameraViewModel(
         disconnect()
         val sequence = connectionSequence
         mutableState.update { it.copy(selectedProfile = profile, configuring = configuring) }
+        if (profile.address.startsWith("https://", ignoreCase = true) && profile.fingerprint == null) {
+            mutableState.update { it.copy(status = ConnectionStatus.Connecting, statusText = "Verificando certificado HTTPS…") }
+            viewModelScope.launch {
+                try {
+                    val offer = withContext(Dispatchers.IO) { inspectCameraCertificate(CameraEndpoint.origin(profile.address)) }
+                    if (sequence != connectionSequence) return@launch
+                    if (offer == null) {
+                        requestProfilePassword(profile, sequence)
+                    } else {
+                        mutableState.update {
+                            it.copy(
+                                certificatePrompt = offer,
+                                status = ConnectionStatus.Disconnected,
+                                statusText = "Confirma el certificado de la cámara.",
+                            )
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    if (sequence == connectionSequence) connectionFailure(message(error))
+                }
+            }
+        } else {
+            requestProfilePassword(profile, sequence)
+        }
+    }
+
+    private fun requestProfilePassword(profile: CameraProfile, sequence: Long) {
         if (profile.username.isEmpty()) {
             connectWithPassword(profile, "")
         } else if (profile.encryptedPassword == null) {
-            mutableState.update { it.copy(passwordPrompt = profile) }
+            mutableState.update { it.copy(passwordPrompt = profile, status = ConnectionStatus.Disconnected) }
         } else {
             mutableState.update { it.copy(status = ConnectionStatus.Connecting, statusText = "Conectando…") }
             viewModelScope.launch {
@@ -267,7 +305,7 @@ internal class CameraViewModel(
                 if (sequence != connectionSequence) return@launch
                 if (password == null) {
                     disconnect()
-                    mutableState.update { it.copy(passwordPrompt = profile) }
+                    mutableState.update { it.copy(passwordPrompt = profile, status = ConnectionStatus.Disconnected) }
                     notify("Escribe la contraseña para conectar. Puedes actualizarla al editar el perfil.")
                 } else {
                     connectWithPassword(profile, password)
@@ -276,6 +314,46 @@ internal class CameraViewModel(
         }
     }
 
+    fun dismissCertificate() {
+        if (state.value.certificatePrompt == null) return
+        mutableState.update { it.copy(certificatePrompt = null) }
+        connectionFailure("El certificado no se guardó. Puedes reintentar la conexión.")
+    }
+
+    fun trustCertificate() {
+        val current = state.value
+        val profile = current.selectedProfile ?: return
+        val offer = current.certificatePrompt ?: return
+        if (current.profilesBusy || current.profilesLoadFailed ||
+            current.profiles.none { it.id == profile.id && it.address == profile.address && it.fingerprint == null }
+        ) return
+        val sequence = connectionSequence
+        val trusted = profile.copy(fingerprint = offer.fingerprint)
+        val profiles = current.profiles.map { if (it.id == trusted.id) trusted else it }
+        mutableState.update { it.copy(certificatePrompt = null, profilesBusy = true) }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { profileStore.save(profiles) }
+                mutableState.update { it.copy(profiles = profiles, profilesBusy = false) }
+                if (sequence == connectionSequence) openProfile(trusted, current.configuring)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutableState.update { it.copy(profilesBusy = false) }
+                if (sequence == connectionSequence) connectionFailure("No se pudo guardar el certificado en este dispositivo.")
+            }
+        }
+    }
+
+    private fun connectionFailure(text: String) {
+        mutableState.update {
+            it.copy(
+                status = ConnectionStatus.Error,
+                statusText = text,
+                settingsError = if (it.configuring) text else it.settingsError,
+            )
+        }
+    }
     fun submitPassword(password: String) {
         val profile = state.value.passwordPrompt ?: return
         dismissPassword()
@@ -530,7 +608,7 @@ internal class CameraViewModel(
         mutableState.update {
             it.copy(status = ConnectionStatus.Disconnected, statusText = "Desconectado",
                 frame = null, usingH264 = false, usingRtsp = false, avcSize = null, fullscreen = false, capturing = false, snapshot = null, passwordPrompt = null,
-                settings = null, settingsBusy = false, settingsError = null)
+                settings = null, settingsBusy = false, settingsError = null, certificatePrompt = null)
         }
     }
 
@@ -555,12 +633,12 @@ internal class CameraViewModel(
             try {
                 val fresh = withContext(Dispatchers.IO) {
                     if (control != null) request.apply(control)
-                    var settings = request.settings()
+                    var settings = readSettings(request)
                     if (control != null) {
                         for (wait in listOf(250L, 500L, 1000L)) {
                             if (control.matches(settings)) break
                             delay(wait)
-                            settings = request.settings()
+                            settings = readSettings(request)
                         }
                     }
                     settings
@@ -582,7 +660,11 @@ internal class CameraViewModel(
             } catch (error: Exception) {
                 if (settingsRequest === request) {
                     mutableState.update {
-                        it.copy(settingsError = message(error))
+                        it.copy(settingsError = when (error) {
+                            is SocketTimeoutException -> "La cámara tardó demasiado en responder a los ajustes. Pulsa Actualizar."
+                            is JSONException -> "La cámara devolvió ajustes con un formato inesperado. Comprueba el panel original."
+                            else -> message(error)
+                        })
                     }
                 }
             } finally {
@@ -591,6 +673,18 @@ internal class CameraViewModel(
                     mutableState.update { it.copy(settingsBusy = false) }
                 }
             }
+        }
+    }
+
+    private suspend fun readSettings(request: CameraRepository.Request): CameraSettings {
+        return try {
+            request.settings()
+        } catch (error: IOException) {
+            val recoverable = error is SocketTimeoutException || error is EOFException ||
+                error is SocketException || (error is CameraResponse && error.status in setOf(502, 503, 504))
+            if (!recoverable) throw error
+            delay(350)
+            request.settings()
         }
     }
 

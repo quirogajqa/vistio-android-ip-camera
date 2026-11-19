@@ -1,8 +1,11 @@
 package com.quirogaj.vistio
 
+import android.app.UiModeManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -34,6 +37,7 @@ import com.quirogaj.vistio.data.RtspPlayer
 import com.quirogaj.vistio.data.CameraProfileStore
 import com.quirogaj.vistio.ui.theme.VistioTheme
 import com.quirogaj.vistio.ui.theme.VistioTvTheme
+import com.quirogaj.vistio.view.VistioSplash
 import com.quirogaj.vistio.view.camera.CameraScreen
 import com.quirogaj.vistio.viewmodel.CameraViewModel
 import com.quirogaj.vistio.viewmodel.UpdatesViewModel
@@ -41,7 +45,11 @@ import com.quirogaj.vistio.viewmodel.UpdateStatus
 import com.quirogaj.vistio.view.update.UpdatesDialog
 
 open class MainActivity : ComponentActivity() {
-    protected open val isTv = false
+    protected open val isTv: Boolean by lazy {
+        getSystemService(UiModeManager::class.java)?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_TELEVISION)
+    }
 
     private val model: CameraViewModel by viewModels {
         viewModelFactory { initializer { CameraViewModel(CameraRepository(), CameraProfileStore(applicationContext), RtspPlayer(applicationContext)) } }
@@ -52,9 +60,21 @@ open class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(R.style.Theme_Vistio)
         super.onCreate(savedInstanceState)
+        if (isTv && requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
         enableEdgeToEdge()
         setContent {
+            var showSplash by rememberSaveable { mutableStateOf(savedInstanceState == null) }
+            if (showSplash) {
+                VistioTheme(tv = isTv) {
+                    VistioSplash(onFinished = { showSplash = false })
+                }
+                return@setContent
+            }
+
             val state by model.state.collectAsStateWithLifecycle()
             val updateState by updates.state.collectAsStateWithLifecycle()
             var showUpdates by rememberSaveable { mutableStateOf(false) }
@@ -99,6 +119,8 @@ open class MainActivity : ComponentActivity() {
                         loadProfiles = model::loadProfiles,
                         submitPassword = model::submitPassword,
                         dismissPassword = model::dismissPassword,
+                        trustCertificate = model::trustCertificate,
+                        dismissCertificate = model::dismissCertificate,
                         disconnect = model::disconnect,
                         fullscreen = model::setFullscreen,
                         capture = model::takeSnapshot,

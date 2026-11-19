@@ -21,6 +21,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.quirogaj.vistio.view.tv.TvActionButton
+import com.quirogaj.vistio.view.tv.TvCameraSetupDialog
 import androidx.compose.ui.semantics.Role
 import com.quirogaj.vistio.R
 import com.quirogaj.vistio.data.CameraProfile
@@ -98,130 +103,228 @@ internal fun ProfileEditor(
 ) {
     var form by remember(initial) { mutableStateOf(initial) }
     var confirmDelete by remember(initial) { mutableStateOf(false) }
+    var showQr by remember(initial) { mutableStateOf(false) }
+    var focusReceivedPassword by remember(initial) { mutableStateOf(false) }
+    val passwordFocus = remember { FocusRequester() }
     val editing = initial.id != null
     val initialFocus = remember { FocusRequester() }
-    AlertDialog(
-        onDismissRequest = dismiss,
-        title = { Text(if (editing) "Editar cámara" else "Agregar cámara") },
-        text = {
-            LaunchedEffect(isTv) { if (isTv) initialFocus.requestFocus() }
-            Column(
-                Modifier.imePadding().verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                OutlinedTextField(
-                    value = form.name, onValueChange = { form = form.copy(name = it) },
-                    modifier = Modifier.fillMaxWidth()
-                        .then(if (isTv) Modifier.focusRequester(initialFocus) else Modifier).tvFocusOutline(isTv),
-                    enabled = !busy, singleLine = true,
-                    label = { Text("Nombre (opcional)") },
-                    placeholder = { Text("Ej. Entrada") },
+    val title = if (editing) "Editar cámara" else "Agregar cámara"
+    val fields: @Composable () -> Unit = {
+    LaunchedEffect(isTv) { if (isTv) initialFocus.requestFocus() }
+    Column(
+        Modifier.fillMaxWidth().then(if (isTv) Modifier else Modifier.imePadding())
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(if (isTv) 16.dp else 10.dp),
+    ) {
+        OutlinedTextField(
+            value = form.name, onValueChange = { form = form.copy(name = it) },
+            modifier = Modifier.fillMaxWidth()
+                .then(if (isTv) Modifier.focusRequester(initialFocus) else Modifier).tvFocusOutline(isTv),
+            enabled = !busy, singleLine = true,
+            label = { Text("Nombre (opcional)") },
+            placeholder = { Text("Ej. Entrada") },
+        )
+        OutlinedTextField(
+            value = form.address,
+            onValueChange = { form = form.copy(address = it, fingerprint = "", password = "") },
+            modifier = Modifier.fillMaxWidth().tvFocusOutline(isTv), enabled = !busy, singleLine = true,
+            label = { Text("Dirección de la cámara") },
+            placeholder = { Text("http://192.168.1.10:4444") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
+        )
+        OutlinedTextField(
+            value = form.username, onValueChange = { form = form.copy(username = it, password = "") },
+            modifier = Modifier.fillMaxWidth().tvFocusOutline(isTv), enabled = !busy, singleLine = true,
+            label = { Text("Usuario (opcional)") },
+            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+        )
+        if (form.username.isNotBlank()) {
+            if (isTv || form.rememberPassword) {
+                PasswordField(
+                    form.password,
+                    { form = form.copy(password = it) },
+                    !busy,
+                    modifier = if (isTv) Modifier.focusRequester(passwordFocus) else Modifier,
+                    isTv = isTv,
                 )
-                OutlinedTextField(
-                    value = form.address,
-                    onValueChange = { form = form.copy(address = it, fingerprint = "", password = "") },
-                    modifier = Modifier.fillMaxWidth().tvFocusOutline(isTv), enabled = !busy, singleLine = true,
-                    label = { Text("Dirección de la cámara") },
-                    placeholder = { Text("http://192.168.1.10:4444") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
-                )
-                OutlinedTextField(
-                    value = form.username, onValueChange = { form = form.copy(username = it, password = "") },
-                    modifier = Modifier.fillMaxWidth().tvFocusOutline(isTv), enabled = !busy, singleLine = true,
-                    label = { Text("Usuario (opcional)") },
-                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
-                )
-                if (form.username.isNotBlank()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            checked = form.rememberPassword,
-                            onCheckedChange = { form = form.copy(rememberPassword = it, password = "") },
-                            enabled = !busy,
-                            modifier = Modifier.tvFocusOutline(isTv),
-                        )
-                        Text("Recordar contraseña en este dispositivo")
-                    }
-                    if (form.rememberPassword) {
-                        PasswordField(form.password, { form = form.copy(password = it) }, !busy, isTv = isTv)
-                        Text(
-                            if (initial.password.isNotEmpty() && form.address == initial.address && form.username == initial.username)
-                                "Contraseña guardada. Usa el ojo para verla o escribe otra para cambiarla."
-                            else "La contraseña se guarda cifrada.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    if (form.address.trim().startsWith("http://", ignoreCase = true)) {
-                        Text("Al conectar por HTTP, el video y las credenciales viajan sin cifrar.")
+                LaunchedEffect(focusReceivedPassword, showQr) {
+                    if (isTv && focusReceivedPassword && !showQr) {
+                        withFrameNanos { }
+                        passwordFocus.requestFocus()
+                        focusReceivedPassword = false
                     }
                 }
-                if (form.address.trim().startsWith("https://", ignoreCase = true)) {
-                    OutlinedTextField(
-                        value = form.fingerprint,
-                        onValueChange = { form = form.copy(fingerprint = it) },
-                        modifier = Modifier.fillMaxWidth().tvFocusOutline(isTv),
-                        enabled = !busy,
-                        singleLine = true,
-                        label = { Text("Huella SHA-256 (opcional)") },
-                        supportingText = { Text("Para un certificado autofirmado, pega la huella verificada del certificado de la cámara.") },
-                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
-                    )
-                }
+            }
+            val rememberPassword = { remember: Boolean ->
+                form = form.copy(rememberPassword = remember, password = if (isTv || remember) form.password else "")
+            }
+            if (isTv) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).tvFocusOutline(isTv).toggleable(
-                        value = form.preferH264,
-                        enabled = !busy,
-                        role = Role.Switch,
-                        onValueChange = { form = form.copy(preferH264 = it) },
-                    ),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                        .tvFocusOutline(true).toggleable(
+                            value = form.rememberPassword,
+                            enabled = !busy,
+                            role = Role.Switch,
+                            onValueChange = rememberPassword,
+                        ).padding(horizontal = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Preferir H.264", modifier = Modifier.weight(1f))
-                    Switch(checked = form.preferH264, onCheckedChange = null, enabled = !busy)
+                    Text("Recordar contraseña en este dispositivo", modifier = Modifier.weight(1f))
+                    Switch(checked = form.rememberPassword, onCheckedChange = null, enabled = !busy)
                 }
-                if (form.address.trim().startsWith("https://", ignoreCase = true)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).tvFocusOutline(isTv).toggleable(
-                            value = form.preferRtsp,
-                            enabled = !busy,
-                            role = Role.Switch,
-                            onValueChange = { form = form.copy(preferRtsp = it) },
-                        ),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("Preferir RTSPS", modifier = Modifier.weight(1f))
-                        Switch(checked = form.preferRtsp, onCheckedChange = null, enabled = !busy)
-                    }
-                    if (form.preferRtsp) {
-                        OutlinedTextField(
-                            value = form.rtspPort,
-                            onValueChange = { form = form.copy(rtspPort = it) },
-                            modifier = Modifier.fillMaxWidth().tvFocusOutline(isTv),
-                            enabled = !busy,
-                            singleLine = true,
-                            label = { Text("Puerto RTSPS") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            supportingText = { Text("Usa el puerto que muestra Android IP Camera. El habitual es 8554.") },
-                        )
-                    }
+                if (!form.rememberPassword) {
+                    Text("Vistio pedirá la contraseña al conectar.", style = MaterialTheme.typography.bodyMedium)
                 }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (editing && !confirmDelete) {
-                    CameraAction(isTv, "Eliminar perfil", { confirmDelete = true }, enabled = !busy)
-                }
-                if (confirmDelete) {
-                    Text("¿Eliminar este perfil del dispositivo?")
-                    CameraAction(isTv, "Confirmar eliminación", { initial.id?.let(delete) }, enabled = !busy)
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = form.rememberPassword, onCheckedChange = rememberPassword, enabled = !busy)
+                    Text("Recordar contraseña en este dispositivo")
                 }
             }
-        },
-        confirmButton = { CameraAction(isTv, "Guardar perfil", { save(form) }, enabled = !busy) },
-        dismissButton = { CameraAction(isTv, "Cancelar", dismiss, enabled = !busy) },
+            if (form.rememberPassword) {
+                Text(
+                    if (initial.password.isNotEmpty() && form.address == initial.address && form.username == initial.username)
+                        "Contraseña guardada. Puedes mostrarla o escribir otra para cambiarla."
+                    else "La contraseña se guarda cifrada.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (form.address.trim().startsWith("http://", ignoreCase = true)) {
+                Text("Al conectar por HTTP, el video y las credenciales viajan sin cifrar.")
+            }
+        }
+        if (form.address.trim().startsWith("https://", ignoreCase = true)) {
+            OutlinedTextField(
+                value = form.fingerprint,
+                onValueChange = { form = form.copy(fingerprint = it) },
+                modifier = Modifier.fillMaxWidth().tvFocusOutline(isTv),
+                enabled = !busy,
+                singleLine = true,
+                label = { Text("Huella SHA-256 (opcional)") },
+                supportingText = { Text("Para un certificado autofirmado, pega la huella verificada del certificado de la cámara.") },
+                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).tvFocusOutline(isTv).toggleable(
+                value = form.preferH264,
+                enabled = !busy,
+                role = Role.Switch,
+                onValueChange = { form = form.copy(preferH264 = it) },
+            ),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Preferir H.264", modifier = Modifier.weight(1f))
+            Switch(checked = form.preferH264, onCheckedChange = null, enabled = !busy)
+        }
+        if (form.address.trim().startsWith("https://", ignoreCase = true)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).tvFocusOutline(isTv).toggleable(
+                    value = form.preferRtsp,
+                    enabled = !busy,
+                    role = Role.Switch,
+                    onValueChange = { form = form.copy(preferRtsp = it) },
+                ),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Preferir RTSPS", modifier = Modifier.weight(1f))
+                Switch(checked = form.preferRtsp, onCheckedChange = null, enabled = !busy)
+            }
+            if (form.preferRtsp) {
+                OutlinedTextField(
+                    value = form.rtspPort,
+                    onValueChange = { form = form.copy(rtspPort = it) },
+                    modifier = Modifier.fillMaxWidth().tvFocusOutline(isTv),
+                    enabled = !busy,
+                    singleLine = true,
+                    label = { Text("Puerto RTSPS") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    supportingText = { Text("Usa el puerto que muestra Android IP Camera. El habitual es 8554.") },
+                )
+            }
+        }
+        if (!isTv) error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        if (busy && !isTv) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (editing && !confirmDelete) {
+            CameraAction(isTv, "Eliminar perfil", { confirmDelete = true }, enabled = !busy)
+        }
+        if (confirmDelete) {
+            Text("¿Eliminar este perfil del dispositivo?")
+            CameraAction(isTv, "Confirmar eliminación", { initial.id?.let(delete) }, enabled = !busy)
+        }
+    }
+    }
+    if (isTv) {
+        Dialog(
+            onDismissRequest = dismiss,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Column(
+                    Modifier.safeDrawingPadding().imePadding()
+                        .padding(horizontal = 48.dp, vertical = if (keyboardVisible) 8.dp else 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (keyboardVisible) 8.dp else 16.dp),
+                ) {
+                    if (!keyboardVisible) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium)
+                            if (!editing) TvActionButton("Configurar con QR", { showQr = true }, enabled = !busy)
+                        }
+                    }
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                        Box(Modifier.widthIn(max = 760.dp).fillMaxWidth()) { fields() }
+                    }
+                    if (!keyboardVisible) {
+                        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        HorizontalDivider()
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.End),
+                        ) {
+                            TvActionButton("Cancelar", dismiss, enabled = !busy)
+                            TvActionButton("Guardar perfil", { save(form) }, enabled = !busy, primary = true)
+                        }
+                    }
+                }
+            }
+        }
+        if (showQr) {
+            TvCameraSetupDialog(
+                onReceived = { setup ->
+                    form = form.copy(
+                        name = setup.name,
+                        address = setup.address,
+                        username = setup.username,
+                        fingerprint = setup.fingerprint,
+                        password = "",
+                        rememberPassword = false,
+                    )
+                    focusReceivedPassword = setup.username.isNotBlank()
+                    showQr = false
+                },
+                onDismiss = { showQr = false },
+            )
+        }
+        return
+    }
+
+    AlertDialog(
+        onDismissRequest = dismiss,
+        title = { Text(title) },
+        text = fields,
+        confirmButton = { CameraAction(false, "Guardar perfil", { save(form) }, enabled = !busy) },
+        dismissButton = { CameraAction(false, "Cancelar", dismiss, enabled = !busy) },
     )
 }
-
 @Composable
 internal fun ProfilePasswordDialog(
     profile: CameraProfile,
@@ -260,19 +363,29 @@ private fun PasswordField(
     isTv: Boolean = false,
 ) {
     var visible by remember { mutableStateOf(false) }
-    OutlinedTextField(
-        value = value, onValueChange = change, modifier = modifier.fillMaxWidth().tvFocusOutline(isTv),
-        enabled = enabled, singleLine = true,
-        label = { Text("Contraseña") },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-        visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
-            IconButton(onClick = { visible = !visible }, enabled = enabled, modifier = Modifier.tvFocusOutline(isTv)) {
-                Icon(
-                    painter = painterResource(if (visible) R.drawable.ic_visibility_off else R.drawable.ic_visibility),
-                    contentDescription = if (visible) "Ocultar contraseña" else "Mostrar contraseña",
-                )
-            }
-        },
-    )
+    val visibilityLabel = if (visible) "Ocultar contraseña" else "Mostrar contraseña"
+    val visibilityIcon: @Composable (() -> Unit)? = if (isTv) null else ({
+        IconButton(onClick = { visible = !visible }, enabled = enabled) {
+            Icon(
+                painter = painterResource(if (visible) R.drawable.ic_visibility_off else R.drawable.ic_visibility),
+                contentDescription = visibilityLabel,
+            )
+        }
+    })
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = change,
+            modifier = modifier.fillMaxWidth().tvFocusOutline(isTv),
+            enabled = enabled,
+            singleLine = true,
+            label = { Text("Contraseña") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = visibilityIcon,
+        )
+        if (isTv) {
+            TvActionButton(visibilityLabel, { visible = !visible }, Modifier.fillMaxWidth(), enabled)
+        }
+    }
 }

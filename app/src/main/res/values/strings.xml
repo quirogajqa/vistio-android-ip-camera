@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Vistio</string>
+    <string name="splash_author">By QuirogaJ</string>
+    <string name="splash_version">v%1$s</string>
 </resources>
