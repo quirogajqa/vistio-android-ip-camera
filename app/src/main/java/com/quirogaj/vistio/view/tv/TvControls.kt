@@ -3,6 +3,7 @@ package com.quirogaj.vistio.view.tv
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -83,6 +84,7 @@ internal fun TvActionButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     primary: Boolean = false,
+    icon: (@Composable () -> Unit)? = null,
 ) {
     val colors = TvMaterialTheme.colorScheme
     val shape = RoundedCornerShape(14.dp)
@@ -106,7 +108,9 @@ internal fun TvActionButton(
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.025f),
     ) {
-        Text(
+        if (icon != null) {
+            Box(Modifier.align(Alignment.Center)) { icon() }
+        } else Text(
             text = label,
             modifier = Modifier.align(Alignment.Center).padding(horizontal = 20.dp, vertical = 10.dp),
             textAlign = TextAlign.Center,

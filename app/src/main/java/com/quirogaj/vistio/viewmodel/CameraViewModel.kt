@@ -15,6 +15,7 @@ import com.quirogaj.vistio.data.CameraCertificateOffer
 import com.quirogaj.vistio.data.inspectCameraCertificate
 import com.quirogaj.vistio.data.CameraControl
 import com.quirogaj.vistio.data.CameraSettings
+import com.quirogaj.vistio.data.CameraDirection
 import com.quirogaj.vistio.data.CameraEndpoint
 import com.quirogaj.vistio.data.CameraRepository
 import com.quirogaj.vistio.data.CameraProfile
@@ -47,6 +48,7 @@ internal enum class ConnectionStatus { Disconnected, Connecting, Live, Error }
 internal enum class CameraAudioStatus { Off, Connecting, Playing }
 
 private const val AUDIO_ENABLED = "audio_enabled"
+private const val FALCON_AUDIO_ENABLED = "falcon_audio_enabled"
 
 internal data class CameraForm(
     val id: String? = null,
@@ -59,6 +61,7 @@ internal data class CameraForm(
     val rtspPort: String = "8554",
     val username: String = "",
     val password: String = "",
+    val customMjpeg: Boolean = false,
 )
 
 internal data class CameraUiState(
@@ -80,6 +83,7 @@ internal data class CameraUiState(
     val fullscreen: Boolean = false,
     val audioStatus: CameraAudioStatus = CameraAudioStatus.Off,
     val audioEnabled: Boolean = false,
+    val falconAudioEnabled: Boolean = false,
     val capturing: Boolean = false,
     val snapshot: Snapshot? = null,
     val notice: String? = null,
@@ -97,7 +101,10 @@ internal class CameraViewModel(
 ) : ViewModel() {
     private val connectionCloser = Executors.newCachedThreadPool()
     private val mutableState = MutableStateFlow(
-        CameraUiState(audioEnabled = playbackPreferences.getBoolean(AUDIO_ENABLED, audioEnabledByDefault)),
+        CameraUiState(
+            audioEnabled = playbackPreferences.getBoolean(AUDIO_ENABLED, audioEnabledByDefault),
+            falconAudioEnabled = playbackPreferences.getBoolean(FALCON_AUDIO_ENABLED, false),
+        ),
     )
     val state = mutableState.asStateFlow()
     private var stream: CameraRepository.Request? = null
@@ -108,6 +115,7 @@ internal class CameraViewModel(
     private var rtspCatchUp: Job? = null
     private var activeRtspPort: Int? = null
     private var audio: CameraRepository.Request? = null
+    private var movement: CameraRepository.Request? = null
     private var autoAudioPending = false
     private var capture: CameraRepository.Request? = null
     private var endpoint: CameraEndpoint? = null
@@ -138,6 +146,7 @@ internal class CameraViewModel(
         if (state.value.profilesBusy) return
         val form = if (profile == null) CameraForm() else CameraForm(
             id = profile.id, name = profile.name, address = profile.address,
+            customMjpeg = profile.customMjpeg,
             username = profile.username, rememberPassword = profile.encryptedPassword != null,
             fingerprint = profile.fingerprint.orEmpty(), preferH264 = profile.preferH264,
             preferRtsp = profile.rtspPort != null, rtspPort = (profile.rtspPort ?: 8554).toString(),
@@ -172,30 +181,34 @@ internal class CameraViewModel(
     fun saveProfile(form: CameraForm) {
         val current = state.value
         if (current.profilesBusy || current.profilesLoadFailed) return
-        val origin = runCatching { CameraEndpoint.origin(form.address) }.getOrElse {
+        val (url, customMjpeg) = runCatching {
+            val useMjpeg = form.customMjpeg || CameraEndpoint.hasStreamPath(form.address)
+            val address = if (useMjpeg) CameraEndpoint.mjpegUrl(form.address) else CameraEndpoint.origin(form.address)
+            address to useMjpeg
+        }.getOrElse {
             mutableState.update { it.copy(editorError = "Introduce la dirección HTTP o HTTPS de la cámara.") }
             return
         }
-        val fingerprint = if (origin.protocol == "https" && form.fingerprint.isNotBlank()) {
+        val fingerprint = if (url.protocol == "https" && form.fingerprint.isNotBlank()) {
             CameraCertificatePin.normalize(form.fingerprint) ?: run {
                 mutableState.update { it.copy(editorError = "La huella SHA-256 debe tener 64 dígitos hexadecimales.") }
                 return
             }
         } else null
-        val rtspPort = if (origin.protocol == "https" && form.preferRtsp) {
+        val rtspPort = if (!customMjpeg && url.protocol == "https" && form.preferRtsp) {
             form.rtspPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: run {
                 mutableState.update { it.copy(editorError = "Introduce un puerto RTSPS entre 1 y 65535.") }
                 return
             }
         } else null
         val username = form.username.trim()
-        if (':' in username || (username.isEmpty() && form.password.isNotEmpty())) {
+        if (':' in username || username.any(Char::isISOControl) || (username.isEmpty() && form.password.isNotEmpty())) {
             mutableState.update { it.copy(editorError = "Comprueba el nombre de usuario de la cámara.") }
             return
         }
         val id = form.id ?: UUID.randomUUID().toString()
-        val name = form.name.trim().ifEmpty { origin.host }
-        val address = origin.toString()
+        val name = form.name.trim().ifEmpty { url.host }
+        val address = url.toString()
         val original = current.profiles.firstOrNull { it.id == id }
         val previousPassword = original?.takeIf { it.address == address && it.username == username }?.encryptedPassword
         if (form.rememberPassword && username.isNotEmpty() && form.password.isEmpty() &&
@@ -211,7 +224,11 @@ internal class CameraViewModel(
                 form.password.isNotEmpty() -> profileStore.encrypt(id, form.password)
                 else -> previousPassword
             }
-            val profile = CameraProfile(id, name, address, username, encrypted, fingerprint, form.preferH264, rtspPort)
+            val profile = CameraProfile(
+                id, name, address, username, encrypted, fingerprint,
+                !customMjpeg && form.preferH264, rtspPort, customMjpeg,
+                cropMjpegToWide = original?.cropMjpegToWide ?: false,
+            )
             if (original == null) current.profiles + profile
             else current.profiles.map { if (it.id == id) profile else it }
         }
@@ -223,15 +240,34 @@ internal class CameraViewModel(
         persistProfiles { current.profiles.filterNot { it.id == id } }
     }
 
-    private fun persistProfiles(update: () -> List<CameraProfile>) {
+    fun setMjpegCrop(enabled: Boolean) {
+        val current = state.value
+        val profile = current.selectedProfile ?: return
+        if (current.profilesBusy || current.profilesLoadFailed || profile.cropMjpegToWide == enabled
+        ) return
+        persistProfiles(keepSelection = true) {
+            current.profiles.map { if (it.id == profile.id) it.copy(cropMjpegToWide = enabled) else it }
+        }
+    }
+
+    private fun persistProfiles(keepSelection: Boolean = false, update: () -> List<CameraProfile>) {
         mutableState.update { it.copy(profilesBusy = true, editorError = null) }
         viewModelScope.launch {
             try {
                 val profiles = withContext(Dispatchers.IO) {
                     update().also(profileStore::save)
                 }
-                if (state.value.selectedProfile != null) showProfiles()
-                mutableState.update { it.copy(profiles = profiles, editor = null) }
+                if (keepSelection) {
+                    mutableState.update { current ->
+                        current.copy(
+                            profiles = profiles,
+                            selectedProfile = profiles.firstOrNull { it.id == current.selectedProfile?.id },
+                        )
+                    }
+                } else {
+                    if (state.value.selectedProfile != null) showProfiles()
+                    mutableState.update { it.copy(profiles = profiles, editor = null) }
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -261,6 +297,12 @@ internal class CameraViewModel(
             requestPermission()
             return
         }
+        if (configuring && profile.customMjpeg && profile == state.value.selectedProfile && stream != null) {
+            autoAudioPending = false
+            stopAudio()
+            mutableState.update { it.copy(configuring = true, fullscreen = false) }
+            return
+        }
         openProfile(profile, configuring)
     }
 
@@ -281,7 +323,7 @@ internal class CameraViewModel(
             mutableState.update { it.copy(status = ConnectionStatus.Connecting, statusText = "Verificando certificado HTTPS…") }
             viewModelScope.launch {
                 try {
-                    val offer = withContext(Dispatchers.IO) { inspectCameraCertificate(CameraEndpoint.origin(profile.address)) }
+                    val offer = withContext(Dispatchers.IO) { inspectCameraCertificate(CameraEndpoint.origin(profile.address, allowQuery = profile.customMjpeg)) }
                     if (sequence != connectionSequence) return@launch
                     if (offer == null) {
                         requestProfilePassword(profile, sequence)
@@ -381,12 +423,15 @@ internal class CameraViewModel(
     }
 
     private fun connectWithPassword(profile: CameraProfile, password: String) {
-        val origin = runCatching { CameraEndpoint.origin(profile.address) }.getOrElse {
+        val origin = runCatching { CameraEndpoint.origin(profile.address, allowQuery = profile.customMjpeg) }.getOrElse {
             notify("Edita el perfil y comprueba la dirección de la cámara.")
             return
         }
-        val camera = CameraEndpoint(origin, profile.username, password, profile.fingerprint)
-        if (state.value.configuring) {
+        val camera = CameraEndpoint(
+            origin, profile.username, password, profile.fingerprint,
+            if (profile.customMjpeg) CameraEndpoint.mjpegUrl(profile.address) else null,
+        )
+        if (state.value.configuring && !profile.customMjpeg) {
             disconnect()
             endpoint = camera
             loadSettings()
@@ -395,13 +440,20 @@ internal class CameraViewModel(
         }
     }
 
-    fun panelAddress(): String? = endpoint?.origin?.toString() ?: state.value.selectedProfile?.address
+    fun panelAddress(): String? = endpoint?.origin?.toString() ?: state.value.selectedProfile?.let {
+        CameraEndpoint.origin(it.address, allowQuery = it.customMjpeg).toString()
+    }
 
     private fun start(camera: CameraEndpoint, preferH264: Boolean, rtspPort: Int?) {
         disconnect()
         endpoint = camera
         activeRtspPort = rtspPort
-        autoAudioPending = state.value.audioEnabled
+        autoAudioPending = when {
+            state.value.configuring -> false
+            camera.isFalconStream -> state.value.falconAudioEnabled
+            camera.mjpegUrl == null -> state.value.audioEnabled
+            else -> false
+        }
         mutableState.update {
             it.copy(
                 status = ConnectionStatus.Connecting,
@@ -410,7 +462,7 @@ internal class CameraViewModel(
                     preferH264 -> "Conectando por H.264…"
                     else -> "Conectando por MJPEG…"
                 },
-                fullscreen = true, usingH264 = preferH264 && rtspPort == null, usingRtsp = rtspPort != null,
+                fullscreen = !it.configuring && !camera.isFalconStream, usingH264 = preferH264 && rtspPort == null, usingRtsp = rtspPort != null,
             )
         }
         if (!preferH264 && rtspPort == null) startMjpeg(camera)
@@ -609,7 +661,30 @@ internal class CameraViewModel(
         }
     }
 
+    fun moveCamera(direction: CameraDirection) {
+        val current = state.value
+        val camera = endpoint ?: return
+        if (current.fullscreen || current.status != ConnectionStatus.Live ||
+            !camera.isFalconStream || movement != null
+        ) return
+        val request = repository.request(camera)
+        movement = request
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { request.moveFalcon(direction) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (movement === request) notify("No se pudo mover la cámara.")
+            } finally {
+                if (movement === request) movement = null
+            }
+        }
+    }
+
     fun disconnect() {
+        movement?.cancel(connectionCloser)
+        movement = null
         autoAudioPending = false
         stopAudio()
         connectionSequence++
@@ -638,6 +713,16 @@ internal class CameraViewModel(
 
     fun toggleAudio() {
         if (state.value.status != ConnectionStatus.Live) return
+        val camera = endpoint ?: return
+        if (camera.mjpegUrl != null) {
+            if (camera.isFalconStream) {
+                val enable = !state.value.falconAudioEnabled
+                playbackPreferences.edit().putBoolean(FALCON_AUDIO_ENABLED, enable).apply()
+                mutableState.update { it.copy(falconAudioEnabled = enable) }
+                if (enable) startAudio() else stopAudio()
+            }
+            return
+        }
         val enable = !state.value.audioEnabled
         playbackPreferences.edit().putBoolean(AUDIO_ENABLED, enable).apply()
         mutableState.update { it.copy(audioEnabled = enable) }

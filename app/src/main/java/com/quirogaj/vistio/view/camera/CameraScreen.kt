@@ -1,14 +1,17 @@
 package com.quirogaj.vistio.view.camera
 
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.view.Surface as VideoSurface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -16,24 +19,38 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
 import com.quirogaj.vistio.view.tv.CameraAction
 import com.quirogaj.vistio.view.tv.TvCameraHome
-import com.quirogaj.vistio.view.tv.TvControlGap
 import com.quirogaj.vistio.view.tv.TvHorizontalMargin
 import com.quirogaj.vistio.view.tv.TvVerticalMargin
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.quirogaj.vistio.BuildConfig
+import com.quirogaj.vistio.R
+import com.quirogaj.vistio.view.tv.TvActionButton
+import com.quirogaj.vistio.view.tv.tvFocusOutline
 import com.quirogaj.vistio.data.CameraControl
+import com.quirogaj.vistio.data.CameraDirection
 import com.quirogaj.vistio.data.CameraProfile
+import com.quirogaj.vistio.data.CameraEndpoint
 import com.quirogaj.vistio.viewmodel.CameraAudioStatus
 import com.quirogaj.vistio.viewmodel.CameraForm
 import com.quirogaj.vistio.viewmodel.CameraUiState
@@ -64,6 +81,8 @@ internal fun CameraScreen(
     onVideoSurface: (VideoSurface, Boolean) -> Unit,
     reloadSettings: () -> Unit,
     changeSettings: (CameraControl) -> Unit,
+    setMjpegCrop: (Boolean) -> Unit,
+    moveCamera: (CameraDirection) -> Unit,
     panel: () -> Unit,
     dismissSnapshot: () -> Unit,
     save: () -> Unit,
@@ -81,96 +100,94 @@ internal fun CameraScreen(
     Scaffold(
         contentWindowInsets = if (state.fullscreen) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
         topBar = {
-            val profile = state.selectedProfile
-            if (!state.fullscreen && isTv && state.configuring && profile != null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().windowInsetsPadding(
-                        WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
-                    )
-                        .padding(start = TvHorizontalMargin, top = TvVerticalMargin, end = TvHorizontalMargin, bottom = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(TvControlGap),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CameraAction(true, "Volver", showProfiles)
-                    Text(
-                        if (state.configuring) "Configuración" else profile.name,
-                        style = MaterialTheme.typography.headlineSmall,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            if (!state.fullscreen && !isTv) TopAppBar(
-                title = {
-                    val name = state.selectedProfile?.name
-                    Text(if (state.configuring) "Configuración" else name ?: "Mis cámaras", maxLines = 1)
-                },
-                navigationIcon = {
-                    if (state.selectedProfile != null) {
-                        CameraAction(false, "Volver", showProfiles)
-                    }
-                },
-                actions = {
-                    if (state.selectedProfile == null) {
+            if (!isTv && state.selectedProfile == null) {
+                TopAppBar(
+                    title = { Text("Mis cámaras", maxLines = 1) },
+                    actions = {
                         TextButton(onClick = openUpdates) {
                             Text(if (updateAvailable) "Actualizar" else "Actualizaciones")
                         }
                         Text("v${BuildConfig.VERSION_NAME}", Modifier.padding(end = 20.dp))
-                    }
-                },
-            )
+                    },
+                )
+            }
         },
         snackbarHost = { SnackbarHost(messages) },
     ) { padding ->
         val selected = state.selectedProfile
-        val body = Modifier.fillMaxSize().padding(padding)
-        when {
-            selected == null && isTv -> TvCameraHome(
-                state, body, { connect(it, false) }, { connect(it, true) },
-                { editProfile(null) }, loadProfiles, updateAvailable, openUpdates,
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            val body = Modifier.fillMaxSize().then(
+                if (state.configuring && !isTv) Modifier.padding(top = 64.dp) else Modifier,
             )
-            selected == null -> CameraProfiles(
-                state, body, { connect(it, false) }, { connect(it, true) }, editProfile, loadProfiles,
-            )
-            state.configuring && isTv -> TvConfiguration(
-                name = selected.name,
-                modifier = body,
-                editorClosed = state.editor == null && state.passwordPrompt == null,
-                editProfile = { editProfile(selected) },
-                panel = panel,
-            ) {
-                CameraSettingsCard(state, {
-                    if (state.settings == null) connect(selected, true) else reloadSettings()
-                }, changeSettings, isTv = true)
-            }
-            state.configuring -> Box(body, contentAlignment = Alignment.TopCenter) {
-                Column(
-                    Modifier.widthIn(max = 640.dp).fillMaxWidth()
-                        .verticalScroll(rememberScrollState()).padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
+            when {
+                selected == null && isTv -> TvCameraHome(
+                    state, body, { connect(it, false) }, { connect(it, true) },
+                    { editProfile(null) }, loadProfiles, updateAvailable, openUpdates,
+                )
+                selected == null -> CameraProfiles(
+                    state, body, { connect(it, false) }, { connect(it, true) }, editProfile, loadProfiles,
+                )
+                state.configuring && isTv -> TvConfiguration(
+                    name = selected.name,
+                    modifier = body,
+                    editorClosed = state.editor == null && state.passwordPrompt == null,
+                    editProfile = { editProfile(selected) },
+                    panel = panel,
                 ) {
-                    Text(selected.name, style = MaterialTheme.typography.headlineSmall)
-                    CameraSettingsCard(state, {
-                        if (state.settings == null) connect(selected, true) else reloadSettings()
-                    }, changeSettings)
-                    OutlinedButton(onClick = { editProfile(selected) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Editar perfil")
+                    if (selected.customMjpeg) {
+                        CameraPreview(state, selected, true, { connect(selected, true) }, moveCamera)
                     }
-                    TextButton(onClick = panel, modifier = Modifier.fillMaxWidth()) { Text("Abrir panel") }
-                    TextButton(
-                        onClick = { confirmMobileDelete = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !state.profilesBusy && !state.profilesLoadFailed,
-                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                    ) { Text("Eliminar cámara") }
+                    MjpegCropSwitch(selected.cropMjpegToWide, true, !state.profilesLoadFailed, setMjpegCrop)
+                    if (!selected.customMjpeg) {
+                        CameraSettingsCard(state, {
+                            if (state.settings == null) connect(selected, true) else reloadSettings()
+                        }, changeSettings, isTv = true)
+                    }
+                }
+                state.configuring -> Box(body, contentAlignment = Alignment.TopCenter) {
+                    Column(
+                        Modifier.widthIn(max = 640.dp).fillMaxWidth()
+                            .verticalScroll(rememberScrollState()).padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        Text(selected.name, style = MaterialTheme.typography.headlineSmall)
+                        if (selected.customMjpeg) {
+                            CameraPreview(state, selected, false, { connect(selected, true) }, moveCamera)
+                        } else {
+                            CameraSettingsCard(state, {
+                                if (state.settings == null) connect(selected, true) else reloadSettings()
+                            }, changeSettings)
+                        }
+                        MjpegCropSwitch(selected.cropMjpegToWide, false, !state.profilesLoadFailed, setMjpegCrop)
+                        OutlinedButton(onClick = { editProfile(selected) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Editar perfil")
+                        }
+                        TextButton(onClick = panel, modifier = Modifier.fillMaxWidth()) { Text("Abrir panel") }
+                        TextButton(
+                            onClick = { confirmMobileDelete = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !state.profilesBusy && !state.profilesLoadFailed,
+                            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        ) { Text("Eliminar cámara") }
+                    }
+                }
+                else -> PlayerCard(
+                    state, body, isTv, capture, toggleAudio, { fullscreen(!state.fullscreen) }, onVideoSurface,
+                    reconnect = { connect(selected, false) }, disconnect = disconnect, showProfiles = showProfiles,
+                    configure = { connect(selected, true) },
+                    deleteCamera = { deleteProfile(selected.id) },
+                    moveCamera = moveCamera,
+                    setMjpegCrop = setMjpegCrop,
+                )
+            }
+            if (!isTv && selected != null && !state.fullscreen) {
+                SmallFloatingActionButton(
+                    onClick = showProfiles,
+                    modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 8.dp),
+                ) {
+                    Text("Volver", modifier = Modifier.padding(horizontal = 12.dp))
                 }
             }
-            else -> PlayerCard(
-                state, body, isTv, capture, toggleAudio, { fullscreen(!state.fullscreen) }, onVideoSurface,
-                reconnect = { connect(selected, false) }, disconnect = disconnect, showProfiles = showProfiles,
-                configure = { connect(selected, true) },
-                deleteCamera = { deleteProfile(selected.id) },
-            )
         }
     }
 
@@ -244,9 +261,15 @@ private fun PlayerCard(
     showProfiles: () -> Unit,
     configure: () -> Unit,
     deleteCamera: () -> Unit,
+    moveCamera: (CameraDirection) -> Unit,
+    setMjpegCrop: (Boolean) -> Unit,
 ) {
     val live = state.status == ConnectionStatus.Live
+    val profile = state.selectedProfile
+    val canMove = remember(profile) { profile?.hasMovementControls() == true }
     val controlFocus = remember { FocusRequester() }
+    val videoFocus = remember { FocusRequester() }
+    var videoFocused by remember(state.fullscreen) { mutableStateOf(false) }
     var confirmDelete by remember(state.selectedProfile?.id) { mutableStateOf(false) }
     val dialogClosed = state.passwordPrompt == null && state.certificatePrompt == null && state.snapshot == null
     LaunchedEffect(isTv, state.fullscreen, state.status, dialogClosed) {
@@ -265,24 +288,51 @@ private fun PlayerCard(
                 val ratio = if (size != null) size.width.toFloat() / size.height else 16f / 9f
                 AvcSurface(ratio, onVideoSurface)
             } else {
-                Video(state.frame, Modifier.fillMaxSize())
+                Video(state.frame, Modifier.fillMaxSize(), profile?.cropMjpegToWide == true)
             }
-            if (state.fullscreen || (!isTv && live)) {
+            if (state.fullscreen || (live && (!isTv || canMove))) {
+                val showVideoFocus = isTv && canMove && !state.fullscreen
+                val focusModifier = when {
+                    isTv && state.fullscreen -> Modifier.focusRequester(controlFocus)
+                    showVideoFocus -> Modifier.focusRequester(videoFocus)
+                        .focusProperties { right = controlFocus }
+                        .onFocusChanged { videoFocused = it.isFocused }
+                    else -> Modifier
+                }
                 Box(
                     Modifier.matchParentSize()
-                        .then(if (isTv && (live || state.status == ConnectionStatus.Connecting)) Modifier.focusRequester(controlFocus) else Modifier)
+                        .then(focusModifier)
                         .clickable(
                             onClickLabel = if (state.fullscreen) "Salir de pantalla completa" else "Abrir pantalla completa",
                             onClick = fullscreen,
                         ),
-                )
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (showVideoFocus && videoFocused) {
+                        Box(
+                            Modifier.matchParentSize().padding(6.dp)
+                                .border(4.dp, colors.primary, RoundedCornerShape(14.dp)),
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = colors.primary,
+                            contentColor = colors.onPrimary,
+                        ) {
+                            Text(
+                                "Pantalla completa",
+                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                        }
+                    }
+                }
             }
             if (state.status == ConnectionStatus.Connecting) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     CircularProgressIndicator(color = Color.White)
                     if (state.fullscreen) Text(state.statusText, color = Color.White)
                 }
-            } else if (!live && (!isTv || state.fullscreen)) {
+            } else if (!live && ((!isTv && !canMove) || state.fullscreen)) {
                 val action = if (state.status == ConnectionStatus.Error) "Reintentar" else "Conectar"
                 if (isTv) {
                     Column(
@@ -314,10 +364,77 @@ private fun PlayerCard(
     }
     val canCapture = live && !state.capturing && !state.settingsBusy
     val captureLabel = if (state.capturing) "Capturando…" else "Captura"
+    val customMjpeg = profile?.customMjpeg == true
+    val audioAvailable = !customMjpeg || canMove
+    val audioEnabled = if (customMjpeg) state.falconAudioEnabled else state.audioEnabled
     val audioLabel = when (state.audioStatus) {
-        CameraAudioStatus.Off -> if (state.audioEnabled) "Desactivar audio" else "Activar audio"
+        CameraAudioStatus.Off -> if (audioEnabled) "Desactivar audio" else "Activar audio"
         CameraAudioStatus.Connecting -> "Cancelar audio"
         CameraAudioStatus.Playing -> "Silenciar audio"
+    }
+    if (canMove && profile != null) {
+        val portrait = !isTv && LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+        val panel: @Composable (Modifier) -> Unit = { panelModifier ->
+            Surface(
+                modifier = panelModifier,
+                color = colors.surfaceContainer,
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                        .padding(horizontal = if (isTv) 12.dp else 8.dp, vertical = if (isTv) 14.dp else 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(if (isTv) 8.dp else 4.dp),
+                ) {
+                    status()
+                    MovementArrows(isTv, live, moveCamera, buttonSize = 48.dp)
+                    HorizontalDivider()
+                    val mainAction = Modifier.fillMaxWidth().focusRequester(controlFocus)
+                    when (state.status) {
+                        ConnectionStatus.Live -> {
+                            if (isTv) {
+                                TvActionButton(
+                                    "Pantalla completa", fullscreen,
+                                    mainAction.focusProperties { left = videoFocus }, primary = true,
+                                )
+                                MjpegCropSwitch(
+                                    profile.cropMjpegToWide, true, !state.profilesLoadFailed,
+                                    setMjpegCrop, "Recorte 16:9",
+                                )
+                                HorizontalDivider()
+                            }
+                            if (portrait) {
+                                FlowRow(horizontalArrangement = Arrangement.Center) {
+                                    CameraAction(false, captureLabel, capture, enabled = canCapture)
+                                    CameraAction(false, audioLabel, toggleAudio)
+                                    CameraAction(false, "Desconectar", disconnect)
+                                }
+                            } else {
+                                CameraAction(isTv, captureLabel, capture, Modifier.fillMaxWidth(), canCapture)
+                                CameraAction(isTv, audioLabel, toggleAudio, Modifier.fillMaxWidth())
+                                CameraAction(isTv, "Desconectar", disconnect, Modifier.fillMaxWidth())
+                            }
+                        }
+                        ConnectionStatus.Connecting -> CameraAction(isTv, "Desconectar", disconnect, mainAction)
+                        else -> CameraAction(isTv, "Reintentar", reconnect, mainAction)
+                    }
+                }
+            }
+        }
+        if (portrait) {
+            BoxWithConstraints(modifier.background(colors.background)) {
+                val panelLimit = maxHeight * 0.6f
+                Column(Modifier.fillMaxSize()) {
+                    picture(Modifier.weight(1f).fillMaxWidth())
+                    panel(Modifier.fillMaxWidth().heightIn(max = panelLimit))
+                }
+            }
+        } else {
+            Row(modifier.fillMaxSize().background(colors.background)) {
+                picture(Modifier.weight(1f).fillMaxHeight())
+                panel(Modifier.width(if (isTv) 232.dp else 164.dp).fillMaxHeight())
+            }
+        }
+        return
     }
     if (isTv) {
         Row(
@@ -344,7 +461,9 @@ private fun PlayerCard(
                         else -> CameraAction(true, "Reintentar", reconnect, mainAction)
                     }
                     if (live) {
-                        CameraAction(true, audioLabel, toggleAudio, Modifier.fillMaxWidth())
+                        if (audioAvailable) {
+                            CameraAction(true, audioLabel, toggleAudio, Modifier.fillMaxWidth())
+                        }
                         CameraAction(true, captureLabel, capture, Modifier.fillMaxWidth(), canCapture)
                     }
                     CameraAction(true, "Configurar cámara", configure, Modifier.fillMaxWidth())
@@ -380,7 +499,7 @@ private fun PlayerCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     CameraAction(false, captureLabel, capture, enabled = canCapture)
-                    if (live) CameraAction(false, audioLabel, toggleAudio)
+                    if (live && audioAvailable) CameraAction(false, audioLabel, toggleAudio)
                     if (live || state.status == ConnectionStatus.Connecting) {
                         CameraAction(false, "Desconectar", disconnect)
                     }
@@ -412,6 +531,117 @@ private fun DeleteCameraDialog(name: String, isTv: Boolean, onDismiss: () -> Uni
         },
     )
 }
+@Composable
+private fun MjpegCropSwitch(
+    checked: Boolean,
+    isTv: Boolean,
+    enabled: Boolean,
+    change: (Boolean) -> Unit,
+    label: String = "Recortar MJPEG a 16:9",
+) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).tvFocusOutline(isTv)
+            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = change)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(label, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+    }
+}
+
+@Composable
+private fun CameraPreview(
+    state: CameraUiState,
+    profile: CameraProfile,
+    isTv: Boolean,
+    retry: () -> Unit,
+    move: (CameraDirection) -> Unit,
+) {
+    val canMove = remember(profile) { profile.hasMovementControls() }
+    val live = state.status == ConnectionStatus.Live
+    val preview: @Composable (Modifier) -> Unit = { modifier ->
+        Box(
+            modifier.aspectRatio(if (profile.cropMjpegToWide) 16f / 9 else 4f / 3).clip(RoundedCornerShape(16.dp)).background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            Video(state.frame, Modifier.fillMaxSize(), profile.cropMjpegToWide)
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Vista previa", style = MaterialTheme.typography.titleMedium)
+        if (isTv && canMove) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                preview(Modifier.weight(1f))
+                MovementArrows(isTv, live, move)
+            }
+        } else {
+            preview(Modifier.fillMaxWidth())
+            if (canMove) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                MovementArrows(isTv, live, move)
+            }
+        }
+        if (!live) {
+            Text(state.statusText, style = MaterialTheme.typography.bodyMedium)
+            if (state.status != ConnectionStatus.Connecting && state.passwordPrompt == null &&
+                state.certificatePrompt == null
+            ) CameraAction(isTv, "Conectar vista previa", retry)
+        }
+    }
+}
+
+private fun CameraProfile.hasMovementControls(): Boolean =
+    customMjpeg && runCatching { CameraEndpoint.isFalconStream(CameraEndpoint.mjpegUrl(address)) }
+        .getOrDefault(false)
+
+@Composable
+private fun MovementArrows(
+    isTv: Boolean,
+    enabled: Boolean,
+    move: (CameraDirection) -> Unit,
+    buttonSize: Dp = 52.dp,
+) {
+    val button: @Composable (CameraDirection) -> Unit = { direction ->
+        val rotation = when (direction) {
+            CameraDirection.Up -> 0f
+            CameraDirection.Right -> 90f
+            CameraDirection.Down -> 180f
+            CameraDirection.Left -> 270f
+        }
+        val icon: @Composable () -> Unit = {
+            Icon(
+                painter = painterResource(R.drawable.ic_movement_arrow),
+                contentDescription = direction.description,
+                modifier = Modifier.size(34.dp).rotate(rotation),
+                tint = if (isTv) androidx.tv.material3.LocalContentColor.current else LocalContentColor.current,
+            )
+        }
+        if (isTv) {
+            TvActionButton(direction.description, { move(direction) }, Modifier.size(buttonSize), enabled, icon = icon)
+        } else {
+            FilledTonalIconButton(onClick = { move(direction) }, modifier = Modifier.size(buttonSize), enabled = enabled) {
+                icon()
+            }
+        }
+    }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        button(CameraDirection.Up)
+        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            button(CameraDirection.Left)
+            Spacer(Modifier.width(buttonSize))
+            button(CameraDirection.Right)
+        }
+        button(CameraDirection.Down)
+    }
+}
+
 @Composable
 private fun TvConfiguration(
     name: String,
@@ -477,12 +707,26 @@ private fun AvcSurface(ratio: Float, onSurface: (VideoSurface, Boolean) -> Unit)
 }
 
 @Composable
-private fun Video(bitmap: Bitmap?, modifier: Modifier) {
+private fun Video(bitmap: Bitmap?, modifier: Modifier, cropToWide: Boolean = false) {
     if (bitmap == null) {
         Box(modifier)
     } else {
+        val painter = remember(bitmap, cropToWide) {
+            val units = minOf(bitmap.width / 16, bitmap.height / 9)
+            if (cropToWide && units > 0) {
+                val width = units * 16
+                val height = units * 9
+                BitmapPainter(
+                    bitmap.asImageBitmap(),
+                    srcOffset = IntOffset((bitmap.width - width) / 2, (bitmap.height - height) / 2),
+                    srcSize = IntSize(width, height),
+                )
+            } else {
+                BitmapPainter(bitmap.asImageBitmap())
+            }
+        }
         Image(
-            bitmap = remember(bitmap) { bitmap.asImageBitmap() },
+            painter = painter,
             contentDescription = "Imagen de la cámara",
             modifier = modifier,
             contentScale = ContentScale.Fit,

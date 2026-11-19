@@ -1,6 +1,6 @@
 # Vistio
 
-Vistio muestra en Android y Android TV el video en directo de un teléfono que ejecuta [DigitallyRefined Android IP Camera](https://github.com/DigitallyRefined/android-ip-camera). Ambos dispositivos deben estar en la misma red local. El mismo APK detecta Android TV y adapta la interfaz al mando.
+Vistio muestra video en directo en Android y Android TV. Es compatible con cámaras IP que ofrecen MJPEG, como la WOO Falcon VCS001, y con teléfonos que ejecutan [DigitallyRefined Android IP Camera](https://github.com/DigitallyRefined/android-ip-camera). Ambos dispositivos deben estar en la misma red local. El mismo APK detecta Android TV y adapta la interfaz al mando.
 
 **[Descargar el APK](https://github.com/quirogajqa/vistio-android-ip-camera/releases/latest/download/vistio.apk)** · [Notas de la última versión](https://github.com/quirogajqa/vistio-android-ip-camera/releases/latest) · Android 8.0 o posterior · [Licencia GPLv3](LICENSE)
 
@@ -24,6 +24,10 @@ Para escribir desde el celular, abre **Agregar cámara → Configurar con QR** y
 HTTP transmite el video y las credenciales sin cifrar. Si activas HTTPS en el servidor, Vistio usa la validación de Android. Para un certificado autofirmado puedes dejar la huella vacía. Vistio muestra el certificado antes de enviar las credenciales. Comprueba que corresponde a tu cámara y pulsa **Confiar y conectar** para fijar su huella en ese perfil. Si la huella cambia, Vistio bloquea la conexión hasta que verifiques el nuevo certificado. También puedes copiar una huella verificada en **Editar perfil**.
 
 **Recordar contraseña en este dispositivo** cifra la contraseña con Android Keystore. Los perfiles se guardan localmente fuera de las copias de seguridad.
+
+## Cámaras IP con MJPEG
+
+En **Agregar cámara**, activa **Cámara IP (MJPEG)** e introduce la URL completa del flujo HTTP o HTTPS. Para la WOO Falcon VCS001, usa `http://IP_DE_LA_CÁMARA:81/videostream.cgi` y escribe el usuario y la contraseña de la cámara en sus campos. El perfil admite video en directo y capturas. Para la Falcon, Vistio también admite el micrófono y los controles de movimiento. En **Configurar cámara** puedes guardar un recorte de vista 16:9.
 
 ## Modos de video
 
@@ -61,7 +65,7 @@ VISTIO_UPDATE_GITHUB_REPOSITORY=vistio-android-ip-camera
 Para publicar una versión, compila con un número de tres partes superior al anterior. Firma el APK con la misma clave que la última publicación y ejecuta:
 
 ```powershell
-.\gradlew.bat :app:assembleRelease "-PappVersionName=1.7.3"
+.\gradlew.bat :app:assembleRelease "-PappVersionName=1.8.0"
 .\tools\Prepare-Update.ps1 -ApkPath .\vistio-firmado.apk
 ```
 

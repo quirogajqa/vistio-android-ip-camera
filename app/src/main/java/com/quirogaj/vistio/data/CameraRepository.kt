@@ -2,17 +2,20 @@ package com.quirogaj.vistio.data
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.util.Base64
 import android.view.Surface
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
 import java.net.Proxy
+import java.net.Socket
 import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import org.json.JSONObject
+import java.util.Base64
 import java.util.concurrent.Executor
 import javax.net.ssl.HttpsURLConnection
 
@@ -21,19 +24,42 @@ internal class CameraEndpoint(
     val user: String,
     val password: String,
     fingerprint: String? = null,
+    val mjpegUrl: URL? = null,
 ) {
+    val isFalconStream = mjpegUrl?.let { isFalconStream(it) } == true
     val certificatePin by lazy { fingerprint?.let { CameraCertificatePin(origin, it) } }
 
     companion object {
-        fun origin(address: String): URL {
+        fun isFalconStream(url: URL): Boolean =
+            url.protocol == "http" && url.path == "/videostream.cgi"
+
+        fun hasStreamPath(address: String): Boolean {
+            val uri = URI(address.trim())
+            return uri.rawPath.orEmpty().let { it.isNotEmpty() && it != "/" } || uri.rawQuery != null
+        }
+
+        fun mjpegUrl(address: String): URL {
+            val uri = URI(address.trim())
+            origin(address, allowQuery = true)
+            return URI(uri.toASCIIString()).toURL()
+        }
+
+        fun origin(address: String, allowQuery: Boolean = false): URL {
             val uri = URI(address.trim())
             val scheme = uri.scheme?.lowercase()
             require((scheme == "http" || scheme == "https") && uri.host != null &&
                 (uri.port == -1 || uri.port in 1..65535) && uri.userInfo == null &&
-                uri.query == null && uri.fragment == null)
+                (allowQuery || uri.rawQuery == null) && uri.rawFragment == null)
             return URI(scheme, null, uri.host, uri.port, "/", null, null).toURL()
         }
     }
+}
+
+internal enum class CameraDirection(val command: Int, val description: String) {
+    Up(0, "Mover hacia arriba"),
+    Down(2, "Mover hacia abajo"),
+    Left(4, "Mover hacia la izquierda"),
+    Right(6, "Mover hacia la derecha"),
 }
 
 internal class CameraResponse(val status: Int) : IOException()
@@ -42,18 +68,25 @@ internal class CameraRepository {
     class Request(private val endpoint: CameraEndpoint) {
         @Volatile private var cancelled = false
         @Volatile private var connection: HttpURLConnection? = null
+        @Volatile private var audioSocket: Socket? = null
 
         fun stream(onFrame: (ByteArray) -> Unit) {
-            val active = open("/video/mjpeg", 12_000)
+            val (active, delimiter) = openMjpeg()
+            active.inputStream.buffered().use { input ->
+                while (!cancelled) onFrame(MjpegReader.readFrame(input, delimiter))
+            }
+        }
+
+        private fun openMjpeg(): Pair<HttpURLConnection, String> {
+            val url = endpoint.mjpegUrl ?: URL(endpoint.origin, "/video/mjpeg")
+            val active = open(url, 12_000)
             val type = active.contentType.orEmpty()
             val match = boundary.find(type)
             if (!type.substringBefore(';').trim().equals("multipart/x-mixed-replace", true) ||
                 match == null
             ) throw IOException("Respuesta MJPEG inválida")
             val delimiter = "--" + (match.groups[1]?.value ?: match.groupValues[2])
-            active.inputStream.buffered().use { input ->
-                while (!cancelled) onFrame(MjpegReader.readFrame(input, delimiter))
-            }
+            return active to delimiter
         }
 
         fun streamH264(surface: Surface, onFrame: (AvcSize) -> Unit) {
@@ -64,6 +97,10 @@ internal class CameraRepository {
         }
 
         fun streamAudio(onPlaying: () -> Unit) {
+            if (endpoint.isFalconStream) {
+                streamFalconAudio(onPlaying)
+                return
+            }
             val active = open("/audio", 8_000)
             if (!active.contentType.orEmpty().substringBefore(';').trim().equals("audio/wav", true)) {
                 throw IOException("El servidor no devolvió audio WAV.")
@@ -71,7 +108,54 @@ internal class CameraRepository {
             active.inputStream.use { input -> CameraAudioPlayer.play(input, { !cancelled }, onPlaying) }
         }
 
+        private fun streamFalconAudio(onPlaying: () -> Unit) {
+            val origin = endpoint.origin
+            val port = origin.port.takeIf { it != -1 } ?: origin.defaultPort
+            val username = URLEncoder.encode(endpoint.user, "UTF-8")
+            val password = URLEncoder.encode(endpoint.password, "UTF-8")
+            val socket = Socket(Proxy.NO_PROXY)
+            audioSocket = socket
+            try {
+                if (cancelled) throw InterruptedIOException()
+                socket.soTimeout = 8_000
+                socket.connect(InetSocketAddress(origin.host.removeSurrounding("[", "]"), port), 6_000)
+                // The Falcon CGI returns binary frames directly on the socket, without HTTP headers.
+                val request = "GET /audiostream.cgi?user=$username&pwd=$password HTTP/1.0\r\n" +
+                    "Host: ${origin.host}:$port\r\n\r\n"
+                socket.getOutputStream().write(request.toByteArray(Charsets.US_ASCII))
+                CameraAudioPlayer.playFalcon(socket.getInputStream(), { !cancelled }, onPlaying)
+            } finally {
+                socket.close()
+            }
+        }
+
+        fun moveFalcon(direction: CameraDirection) {
+            check(endpoint.isFalconStream)
+            val user = URLEncoder.encode(endpoint.user, "UTF-8")
+            val password = URLEncoder.encode(endpoint.password, "UTF-8")
+            val path = "/decoder_control.cgi?loginuse=$user&loginpas=$password" +
+                "&command=${direction.command}&onestep=1"
+            try {
+                val active = connect(URL(endpoint.origin, path), 4_000, null)
+                val status = active.responseCode
+                if (status != HttpURLConnection.HTTP_OK) throw CameraResponse(status)
+                val expected = """var result="ok";""".toByteArray(Charsets.US_ASCII)
+                val response = ByteArray(expected.size)
+                DataInputStream(active.inputStream).use { it.readFully(response) }
+                if (!response.contentEquals(expected)) {
+                    throw IOException("La cámara rechazó el movimiento.")
+                }
+            } finally {
+                close()
+            }
+        }
+
         fun snapshot(): Snapshot {
+            if (endpoint.mjpegUrl != null) {
+                val (active, delimiter) = openMjpeg()
+                val bytes = active.inputStream.buffered().use { MjpegReader.readFrame(it, delimiter) }
+                return Snapshot(bytes, decode(bytes, 1600))
+            }
             val active = open("/video/snapshot", 20_000)
             if (!active.contentType.orEmpty().substringBefore(';').trim().equals("image/jpeg", true)) {
                 throw IOException("Respuesta JPEG inválida")
@@ -124,11 +208,40 @@ internal class CameraRepository {
 
         fun close() {
             connection?.disconnect()
+            audioSocket?.close()
         }
 
         private fun open(path: String, timeout: Int): HttpURLConnection {
-            val active = endpoint.origin.toURI().resolve(path).toURL()
-                .openConnection(Proxy.NO_PROXY) as HttpURLConnection
+            return open(endpoint.origin.toURI().resolve(path).toURL(), timeout)
+        }
+
+        private fun open(url: URL, timeout: Int): HttpURLConnection {
+            val basic = endpoint.user.takeIf(String::isNotEmpty)?.let {
+                val credentials = "$it:${endpoint.password}".toByteArray(Charsets.UTF_8)
+                "Basic " + Base64.getEncoder().encodeToString(credentials)
+            }
+            var active = connect(url, timeout, basic.takeIf { endpoint.mjpegUrl == null })
+            if (endpoint.mjpegUrl != null && basic != null && active.responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                val challenges = active.headerFields.filterKeys { it.equals("WWW-Authenticate", true) }.values.flatten()
+                val digest = challenges.firstNotNullOfOrNull {
+                    CameraDigest.authorization(it, url, endpoint.user, endpoint.password)
+                }
+                val authorization = digest ?: basic.takeIf {
+                    challenges.any { it.startsWith("Basic ", ignoreCase = true) } &&
+                        challenges.none { it.startsWith("Digest ", ignoreCase = true) }
+                }
+                if (authorization != null) {
+                    active.disconnect()
+                    active = connect(url, timeout, authorization)
+                }
+            }
+            val status = active.responseCode
+            if (status != HttpURLConnection.HTTP_OK) throw CameraResponse(status)
+            return active
+        }
+
+        private fun connect(url: URL, timeout: Int, authorization: String?): HttpURLConnection {
+            val active = url.openConnection(Proxy.NO_PROXY) as HttpURLConnection
             connection = active
             if (cancelled) throw InterruptedIOException()
             active.instanceFollowRedirects = false
@@ -136,12 +249,7 @@ internal class CameraRepository {
             active.connectTimeout = 6000
             active.readTimeout = timeout
             active.useCaches = false
-            if (endpoint.user.isNotEmpty()) {
-                val credentials = (endpoint.user + ":" + endpoint.password).toByteArray(Charsets.UTF_8)
-                active.setRequestProperty("Authorization", "Basic " + Base64.encodeToString(credentials, Base64.NO_WRAP))
-            }
-            val status = active.responseCode
-            if (status != HttpURLConnection.HTTP_OK) throw CameraResponse(status)
+            authorization?.let { active.setRequestProperty("Authorization", it) }
             return active
         }
     }

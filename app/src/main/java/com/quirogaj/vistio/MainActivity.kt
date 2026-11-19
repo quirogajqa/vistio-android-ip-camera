@@ -138,6 +138,8 @@ open class MainActivity : ComponentActivity() {
                         onVideoSurface = model::onVideoSurface,
                         reloadSettings = model::loadSettings,
                         changeSettings = model::changeSettings,
+                        setMjpegCrop = model::setMjpegCrop,
+                        moveCamera = model::moveCamera,
                         panel = ::openPanel,
                         dismissSnapshot = model::dismissSnapshot,
                         save = {

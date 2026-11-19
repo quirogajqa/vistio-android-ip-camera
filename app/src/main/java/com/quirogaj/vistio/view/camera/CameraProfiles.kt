@@ -28,6 +28,7 @@ import com.quirogaj.vistio.view.tv.TvActionButton
 import com.quirogaj.vistio.view.tv.TvCameraSetupDialog
 import androidx.compose.ui.semantics.Role
 import com.quirogaj.vistio.R
+import com.quirogaj.vistio.data.CameraEndpoint
 import com.quirogaj.vistio.data.CameraProfile
 import com.quirogaj.vistio.viewmodel.CameraForm
 import com.quirogaj.vistio.viewmodel.CameraUiState
@@ -124,12 +125,32 @@ internal fun ProfileEditor(
             label = { Text("Nombre (opcional)") },
             placeholder = { Text("Ej. Entrada") },
         )
+        if (isTv) Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).tvFocusOutline(isTv).toggleable(
+                value = form.customMjpeg,
+                enabled = !busy,
+                role = Role.Switch,
+                onValueChange = { form = form.copy(customMjpeg = it) },
+            ),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Cámara IP (MJPEG)", modifier = Modifier.weight(1f))
+            Switch(checked = form.customMjpeg, onCheckedChange = null, enabled = !busy)
+        }
         OutlinedTextField(
             value = form.address,
-            onValueChange = { form = form.copy(address = it, fingerprint = "", password = "") },
+            onValueChange = { address ->
+                val customMjpeg = if (isTv) form.customMjpeg else {
+                    val originalStream = initial.customMjpeg && address.trim() == initial.address
+                    originalStream || runCatching { CameraEndpoint.hasStreamPath(address) }.getOrDefault(false)
+                }
+                form = form.copy(address = address, fingerprint = "", password = "", customMjpeg = customMjpeg)
+            },
             modifier = Modifier.fillMaxWidth().tvFocusOutline(isTv), enabled = !busy, singleLine = true,
-            label = { Text("Dirección de la cámara") },
-            placeholder = { Text("http://192.168.1.10:4444") },
+            label = { Text(if (form.customMjpeg) "URL del video MJPEG" else "Dirección de la cámara") },
+            placeholder = { Text(if (form.customMjpeg) "http://192.168.1.10:81/videostream.cgi" else "http://192.168.1.10:4444") },
+            supportingText = { Text("Si pegas la URL completa del video, Vistio guardará un perfil MJPEG.") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
         )
         OutlinedTextField(
@@ -191,7 +212,7 @@ internal fun ProfileEditor(
                 )
             }
             if (form.address.trim().startsWith("http://", ignoreCase = true)) {
-                Text("Al conectar por HTTP, el video y las credenciales viajan sin cifrar.")
+                Text(if (form.customMjpeg) "HTTP no cifra el video." else "Al conectar por HTTP, el video y las credenciales viajan sin cifrar.")
             }
         }
         if (form.address.trim().startsWith("https://", ignoreCase = true)) {
@@ -206,7 +227,7 @@ internal fun ProfileEditor(
                 keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
             )
         }
-        Row(
+        if (!form.customMjpeg) Row(
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).tvFocusOutline(isTv).toggleable(
                 value = form.preferH264,
                 enabled = !busy,
@@ -219,7 +240,7 @@ internal fun ProfileEditor(
             Text("Preferir H.264", modifier = Modifier.weight(1f))
             Switch(checked = form.preferH264, onCheckedChange = null, enabled = !busy)
         }
-        if (form.address.trim().startsWith("https://", ignoreCase = true)) {
+        if (!form.customMjpeg && form.address.trim().startsWith("https://", ignoreCase = true)) {
             Row(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).tvFocusOutline(isTv).toggleable(
                     value = form.preferRtsp,
@@ -303,6 +324,7 @@ internal fun ProfileEditor(
                     form = form.copy(
                         name = setup.name,
                         address = setup.address,
+                        customMjpeg = setup.customMjpeg,
                         username = setup.username,
                         fingerprint = setup.fingerprint,
                         password = "",

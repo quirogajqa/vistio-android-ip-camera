@@ -24,6 +24,8 @@ internal data class CameraProfile(
     val fingerprint: String? = null,
     val preferH264: Boolean = false,
     val rtspPort: Int? = null,
+    val customMjpeg: Boolean = false,
+    val cropMjpegToWide: Boolean = false,
 )
 
 internal class CameraProfileStore(context: Context) {
@@ -44,6 +46,8 @@ internal class CameraProfileStore(context: Context) {
                 row.optString("fingerprint").takeIf(String::isNotEmpty),
                 row.optBoolean("preferH264"),
                 row.optInt("rtspPort").takeIf { it in 1..65535 },
+                row.optBoolean("customMjpeg"),
+                row.optBoolean("cropMjpegToWide"),
             )
         }
     }
@@ -60,6 +64,8 @@ internal class CameraProfileStore(context: Context) {
                 put("fingerprint", profile.fingerprint)
                 put("preferH264", profile.preferH264)
                 put("rtspPort", profile.rtspPort)
+                put("customMjpeg", profile.customMjpeg)
+                put("cropMjpegToWide", profile.cropMjpegToWide)
             })
         }
         val output = file.startWrite()

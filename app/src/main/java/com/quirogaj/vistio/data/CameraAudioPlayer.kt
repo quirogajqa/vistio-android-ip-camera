@@ -9,7 +9,7 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** Plays the live mono PCM stream from Android IP Camera. */
+/** Plays live mono PCM from the supported camera audio streams. */
 internal object CameraAudioPlayer {
     private const val SAMPLE_RATE = 44_100
     private const val FRAME_BYTES = 2
@@ -17,12 +17,27 @@ internal object CameraAudioPlayer {
     fun play(source: InputStream, active: () -> Boolean, onPlaying: () -> Unit) {
         val input = DataInputStream(source.buffered())
         checkWavHeader(input)
+        playPcm(SAMPLE_RATE, SAMPLE_RATE * FRAME_BYTES / 50, active, onPlaying, input::readFully)
+    }
+
+    fun playFalcon(source: InputStream, active: () -> Boolean, onPlaying: () -> Unit) {
+        val reader = FalconAudio.Reader(DataInputStream(source.buffered()))
+        playPcm(FalconAudio.SAMPLE_RATE, FalconAudio.PCM_BYTES, active, onPlaying, reader::read)
+    }
+
+    private fun playPcm(
+        sampleRate: Int,
+        chunkSize: Int,
+        active: () -> Boolean,
+        onPlaying: () -> Unit,
+        readChunk: (ByteArray) -> Unit,
+    ) {
         if (!active()) return
         val encoding = AudioFormat.ENCODING_PCM_16BIT
         val channel = AudioFormat.CHANNEL_OUT_MONO
-        val minimum = AudioTrack.getMinBufferSize(SAMPLE_RATE, channel, encoding)
+        val minimum = AudioTrack.getMinBufferSize(sampleRate, channel, encoding)
         if (minimum <= 0) throw IOException("El dispositivo no puede reproducir el audio de la cámara.")
-        val chunk = ByteArray(SAMPLE_RATE * FRAME_BYTES / 50)
+        val chunk = ByteArray(chunkSize)
         val track = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -30,7 +45,7 @@ internal object CameraAudioPlayer {
                 .build())
             .setAudioFormat(AudioFormat.Builder()
                 .setEncoding(encoding)
-                .setSampleRate(SAMPLE_RATE)
+                .setSampleRate(sampleRate)
                 .setChannelMask(channel)
                 .build())
             .setTransferMode(AudioTrack.MODE_STREAM)
@@ -41,7 +56,7 @@ internal object CameraAudioPlayer {
             track.play()
             var started = false
             while (active()) {
-                input.readFully(chunk)
+                readChunk(chunk)
                 var offset = 0
                 while (offset < chunk.size && active()) {
                     val written = track.write(chunk, offset, chunk.size - offset, AudioTrack.WRITE_BLOCKING)

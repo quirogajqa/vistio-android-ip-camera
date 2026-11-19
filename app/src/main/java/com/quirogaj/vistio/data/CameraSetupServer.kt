@@ -13,7 +13,6 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
-import java.net.URI
 import java.net.URLDecoder
 import java.security.SecureRandom
 
@@ -22,6 +21,7 @@ internal data class CameraSetup(
     val address: String,
     val username: String,
     val fingerprint: String,
+    val customMjpeg: Boolean,
 )
 
 /** A one-use server bound to the TV's local Wi-Fi or Ethernet address. */
@@ -143,15 +143,14 @@ internal class CameraSetupServer(context: Context) : AutoCloseable {
             require(name.length <= 80 && username.length <= 120 && ':' !in username)
             val rawAddress = values.getValue("address")
             require(rawAddress.length <= 255)
-            val uri = URI(rawAddress)
-            require(uri.rawPath in listOf("", "/"))
-            val camera = CameraEndpoint.origin(rawAddress)
+            val customMjpeg = CameraEndpoint.hasStreamPath(rawAddress)
+            val camera = if (customMjpeg) CameraEndpoint.mjpegUrl(rawAddress) else CameraEndpoint.origin(rawAddress)
             val enteredPin = values["fingerprint"].orEmpty()
             val fingerprint = if (enteredPin.isEmpty()) "" else {
                 require(camera.protocol == "https")
                 requireNotNull(CameraCertificatePin.normalize(enteredPin))
             }
-            CameraSetup(name, camera.toString(), username, fingerprint)
+            CameraSetup(name, camera.toString(), username, fingerprint, customMjpeg)
         }.getOrNull()
         if (setup == null) {
             respond(client, "400 Bad Request", "<p>Comprueba la dirección y, si ingresaste una huella, usa HTTPS y 64 dígitos hexadecimales.</p>$form")
@@ -199,7 +198,7 @@ internal class CameraSetupServer(context: Context) : AutoCloseable {
         <p>Escribe la dirección que muestra Android IP Camera. Si usa contraseña, introdúcela después en la TV.</p>
         <form action="$path" method="post" autocomplete="off">
             <label>Nombre (opcional)<input name="name" maxlength="80"></label>
-            <label>Dirección de la cámara<input name="address" type="url" maxlength="255" placeholder="https://192.168.1.10:4444" required></label>
+            <label>Dirección de la cámara o URL del video MJPEG<input name="address" type="url" maxlength="255" placeholder="https://192.168.1.10:4444" required></label>
             <label>Usuario (opcional)<input name="username" maxlength="120" autocapitalize="none"></label>
             <label>Huella SHA-256 (opcional, solo HTTPS)<input name="fingerprint" maxlength="160" autocapitalize="none" spellcheck="false" placeholder="64 dígitos hexadecimales"></label>
             <p>Comprueba la huella contra el certificado de tu cámara antes de guardar en la TV.</p>
