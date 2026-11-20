@@ -22,7 +22,11 @@ internal object CameraAudioPlayer {
 
     fun playFalcon(source: InputStream, active: () -> Boolean, onPlaying: () -> Unit) {
         val reader = FalconAudio.Reader(DataInputStream(source.buffered()))
-        playPcm(FalconAudio.SAMPLE_RATE, FalconAudio.PCM_BYTES, active, onPlaying, reader::read)
+        val filter = FalconAudioFilter()
+        playPcm(FalconAudio.SAMPLE_RATE, FalconAudio.PCM_BYTES, active, onPlaying) { pcm ->
+            reader.read(pcm)
+            filter.process(pcm)
+        }
     }
 
     private fun playPcm(

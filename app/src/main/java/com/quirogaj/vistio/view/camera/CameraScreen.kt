@@ -5,10 +5,13 @@ import android.graphics.Bitmap
 import android.view.Surface as VideoSurface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
@@ -21,6 +24,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import com.quirogaj.vistio.view.tv.CameraAction
 import com.quirogaj.vistio.view.tv.TvCameraHome
 import com.quirogaj.vistio.view.tv.TvHorizontalMargin
@@ -28,6 +37,7 @@ import com.quirogaj.vistio.view.tv.TvVerticalMargin
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
@@ -36,6 +46,10 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -46,6 +60,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.quirogaj.vistio.BuildConfig
 import com.quirogaj.vistio.R
 import com.quirogaj.vistio.view.tv.TvActionButton
+import com.quirogaj.vistio.view.tv.TvFocusColor
+import com.quirogaj.vistio.view.tv.TvFocusTextColor
 import com.quirogaj.vistio.view.tv.tvFocusOutline
 import com.quirogaj.vistio.data.CameraControl
 import com.quirogaj.vistio.data.CameraDirection
@@ -78,11 +94,12 @@ internal fun CameraScreen(
     fullscreen: (Boolean) -> Unit,
     capture: () -> Unit,
     toggleAudio: () -> Unit,
+    sendAnnouncement: () -> Unit,
     onVideoSurface: (VideoSurface, Boolean) -> Unit,
     reloadSettings: () -> Unit,
     changeSettings: (CameraControl) -> Unit,
     setMjpegCrop: (Boolean) -> Unit,
-    moveCamera: (CameraDirection) -> Unit,
+    moveCamera: (CameraDirection) -> (() -> Unit)?,
     panel: () -> Unit,
     dismissSnapshot: () -> Unit,
     save: () -> Unit,
@@ -172,12 +189,14 @@ internal fun CameraScreen(
                     }
                 }
                 else -> PlayerCard(
-                    state, body, isTv, capture, toggleAudio, { fullscreen(!state.fullscreen) }, onVideoSurface,
+                    state, body, isTv, capture, toggleAudio,
+                    fullscreen = { fullscreen(!state.fullscreen) }, onVideoSurface = onVideoSurface,
                     reconnect = { connect(selected, false) }, disconnect = disconnect, showProfiles = showProfiles,
                     configure = { connect(selected, true) },
                     deleteCamera = { deleteProfile(selected.id) },
                     moveCamera = moveCamera,
                     setMjpegCrop = setMjpegCrop,
+                    sendAnnouncement = sendAnnouncement,
                 )
             }
             if (!isTv && selected != null && !state.fullscreen) {
@@ -254,6 +273,7 @@ private fun PlayerCard(
     isTv: Boolean,
     capture: () -> Unit,
     toggleAudio: () -> Unit,
+    sendAnnouncement: () -> Unit,
     fullscreen: () -> Unit,
     onVideoSurface: (VideoSurface, Boolean) -> Unit,
     reconnect: () -> Unit,
@@ -261,7 +281,7 @@ private fun PlayerCard(
     showProfiles: () -> Unit,
     configure: () -> Unit,
     deleteCamera: () -> Unit,
-    moveCamera: (CameraDirection) -> Unit,
+    moveCamera: (CameraDirection) -> (() -> Unit)?,
     setMjpegCrop: (Boolean) -> Unit,
 ) {
     val live = state.status == ConnectionStatus.Live
@@ -402,7 +422,11 @@ private fun PlayerCard(
                                 )
                                 HorizontalDivider()
                             }
-                            if (portrait) {
+                            CameraAction(
+                            isTv, if (state.sendingAnnouncement) "Enviando aviso…" else "Enviar aviso",
+                            sendAnnouncement, Modifier.fillMaxWidth(), enabled = !state.sendingAnnouncement,
+                        )
+                        if (portrait) {
                                 FlowRow(horizontalArrangement = Arrangement.Center) {
                                     CameraAction(false, captureLabel, capture, enabled = canCapture)
                                     CameraAction(false, audioLabel, toggleAudio)
@@ -557,7 +581,7 @@ private fun CameraPreview(
     profile: CameraProfile,
     isTv: Boolean,
     retry: () -> Unit,
-    move: (CameraDirection) -> Unit,
+    move: (CameraDirection) -> (() -> Unit)?,
 ) {
     val canMove = remember(profile) { profile.hasMovementControls() }
     val live = state.status == ConnectionStatus.Live
@@ -602,31 +626,11 @@ private fun CameraProfile.hasMovementControls(): Boolean =
 private fun MovementArrows(
     isTv: Boolean,
     enabled: Boolean,
-    move: (CameraDirection) -> Unit,
+    move: (CameraDirection) -> (() -> Unit)?,
     buttonSize: Dp = 52.dp,
 ) {
     val button: @Composable (CameraDirection) -> Unit = { direction ->
-        val rotation = when (direction) {
-            CameraDirection.Up -> 0f
-            CameraDirection.Right -> 90f
-            CameraDirection.Down -> 180f
-            CameraDirection.Left -> 270f
-        }
-        val icon: @Composable () -> Unit = {
-            Icon(
-                painter = painterResource(R.drawable.ic_movement_arrow),
-                contentDescription = direction.description,
-                modifier = Modifier.size(34.dp).rotate(rotation),
-                tint = if (isTv) androidx.tv.material3.LocalContentColor.current else LocalContentColor.current,
-            )
-        }
-        if (isTv) {
-            TvActionButton(direction.description, { move(direction) }, Modifier.size(buttonSize), enabled, icon = icon)
-        } else {
-            FilledTonalIconButton(onClick = { move(direction) }, modifier = Modifier.size(buttonSize), enabled = enabled) {
-                icon()
-            }
-        }
+        MovementButton(direction, isTv, enabled, buttonSize, move)
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -639,6 +643,121 @@ private fun MovementArrows(
             button(CameraDirection.Right)
         }
         button(CameraDirection.Down)
+    }
+}
+
+@Composable
+private fun MovementButton(
+    direction: CameraDirection,
+    isTv: Boolean,
+    enabled: Boolean,
+    size: Dp,
+    move: (CameraDirection) -> (() -> Unit)?,
+) {
+    val start by rememberUpdatedState(move)
+    var release by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var keyHeld by remember { mutableStateOf(false) }
+    var pointerHeld by remember { mutableStateOf(false) }
+    var keyRelease by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var focused by remember { mutableStateOf(false) }
+    fun stop() {
+        release?.invoke()
+        release = null
+    }
+    fun releaseKey() {
+        keyHeld = false
+        keyRelease?.let { end ->
+            end()
+            if (release === end) release = null
+        }
+        keyRelease = null
+    }
+    DisposableEffect(enabled) {
+        onDispose {
+            releaseKey()
+            stop()
+        }
+    }
+
+    val colors = MaterialTheme.colorScheme
+    val highlighted = isTv && focused
+    val pressed = enabled && (keyHeld || pointerHeld)
+    val buttonScale by animateFloatAsState(if (pressed) 0.86f else 1f, label = "movementPress")
+    val shape = RoundedCornerShape(14.dp)
+    val rotation = when (direction) {
+        CameraDirection.Up -> 0f
+        CameraDirection.Right -> 90f
+        CameraDirection.Down -> 180f
+        CameraDirection.Left -> 270f
+    }
+
+    Box(
+        Modifier.size(size)
+            .graphicsLayer {
+                scaleX = buttonScale
+                scaleY = buttonScale
+            }
+            .background(
+                when {
+                    pressed && highlighted -> TvFocusColor.copy(alpha = 0.72f)
+                    highlighted -> TvFocusColor
+                    pressed -> colors.primaryContainer
+                    else -> colors.secondaryContainer
+                },
+                shape,
+            )
+            .border(if (highlighted) 3.dp else 1.dp, colors.outlineVariant, shape)
+            .onFocusChanged {
+                focused = it.isFocused
+                if (!focused && keyHeld) releaseKey()
+            }
+            .onPreviewKeyEvent { event ->
+                if (!enabled || event.key !in setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)) {
+                    false
+                } else {
+                    when (event.type) {
+                        KeyEventType.KeyDown -> if (!keyHeld) {
+                            keyHeld = true
+                            keyRelease = start(direction)
+                            keyRelease?.let { release = it }
+                        }
+                        KeyEventType.KeyUp -> releaseKey()
+                    }
+                    true
+                }
+            }
+            .focusable(enabled)
+            .pointerInput(direction, enabled) {
+                if (enabled) detectTapGestures(onPress = {
+                    pointerHeld = true
+                    val end = start(direction)
+                    if (end != null) release = end
+                    try {
+                        tryAwaitRelease()
+                    } finally {
+                        pointerHeld = false
+                        end?.invoke()
+                        if (release === end) release = null
+                    }
+                })
+            }
+            .semantics {
+                role = Role.Button
+                contentDescription = direction.description
+                if (enabled) onClick {
+                    start(direction)?.invoke()
+                    true
+                } else disabled()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            painterResource(R.drawable.ic_movement_arrow),
+            contentDescription = null,
+            modifier = Modifier.size(34.dp).rotate(rotation),
+            tint = (if (highlighted) TvFocusTextColor else colors.onSecondaryContainer)
+                .copy(alpha = if (enabled) 1f else 0.38f),
+        )
     }
 }
 

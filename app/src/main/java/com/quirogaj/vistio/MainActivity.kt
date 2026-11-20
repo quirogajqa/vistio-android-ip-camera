@@ -135,6 +135,11 @@ open class MainActivity : ComponentActivity() {
                         fullscreen = model::setFullscreen,
                         capture = model::takeSnapshot,
                         toggleAudio = model::toggleAudio,
+                        sendAnnouncement = {
+                            model.sendAnnouncement {
+                                resources.openRawResource(R.raw.falcon_aviso).use { it.readBytes() }
+                            }
+                        },
                         onVideoSurface = model::onVideoSurface,
                         reloadSettings = model::loadSettings,
                         changeSettings = model::changeSettings,

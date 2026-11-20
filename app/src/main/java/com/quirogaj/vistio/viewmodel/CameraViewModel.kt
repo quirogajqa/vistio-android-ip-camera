@@ -38,6 +38,7 @@ import java.net.SocketException
 import java.net.SocketTimeoutException
 import org.json.JSONException
 import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.security.cert.CertPathValidatorException
 import java.security.cert.CertificateException
@@ -85,6 +86,7 @@ internal data class CameraUiState(
     val audioEnabled: Boolean = false,
     val falconAudioEnabled: Boolean = false,
     val capturing: Boolean = false,
+    val sendingAnnouncement: Boolean = false,
     val snapshot: Snapshot? = null,
     val notice: String? = null,
     val settings: CameraSettings? = null,
@@ -115,7 +117,9 @@ internal class CameraViewModel(
     private var rtspCatchUp: Job? = null
     private var activeRtspPort: Int? = null
     private var audio: CameraRepository.Request? = null
+    private var announcement: CameraRepository.Request? = null
     private var movement: CameraRepository.Request? = null
+    private var movementRelease: CountDownLatch? = null
     private var autoAudioPending = false
     private var capture: CameraRepository.Request? = null
     private var endpoint: CameraEndpoint? = null
@@ -661,30 +665,38 @@ internal class CameraViewModel(
         }
     }
 
-    fun moveCamera(direction: CameraDirection) {
+    fun moveCamera(direction: CameraDirection): (() -> Unit)? {
         val current = state.value
-        val camera = endpoint ?: return
+        val camera = endpoint ?: return null
         if (current.fullscreen || current.status != ConnectionStatus.Live ||
             !camera.isFalconStream || movement != null
-        ) return
+        ) return null
         val request = repository.request(camera)
+        val release = CountDownLatch(1)
         movement = request
+        movementRelease = release
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) { request.moveFalcon(direction) }
+                withContext(Dispatchers.IO) { request.moveFalcon(direction, release) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                if (movement === request) notify("No se pudo mover la cámara.")
+                if (endpoint === camera) notify("No se pudo confirmar el movimiento o la parada de la cámara.")
             } finally {
-                if (movement === request) movement = null
+                if (movement === request) {
+                    movement = null
+                    movementRelease = null
+                }
             }
         }
+        return release::countDown
     }
 
     fun disconnect() {
+        announcement?.cancel(connectionCloser)
+        announcement = null
         movement?.cancel(connectionCloser)
-        movement = null
+        movementRelease?.countDown()
         autoAudioPending = false
         stopAudio()
         connectionSequence++
@@ -701,7 +713,8 @@ internal class CameraViewModel(
         mutableState.update {
             it.copy(status = ConnectionStatus.Disconnected, statusText = "Desconectado",
                 frame = null, usingH264 = false, usingRtsp = false, avcSize = null, fullscreen = false, capturing = false, snapshot = null, passwordPrompt = null,
-                settings = null, settingsBusy = false, settingsError = null, certificatePrompt = null)
+                settings = null, settingsBusy = false, settingsError = null, certificatePrompt = null,
+                sendingAnnouncement = false)
         }
     }
 
@@ -709,6 +722,29 @@ internal class CameraViewModel(
         if (!autoAudioPending) return
         autoAudioPending = false
         startAudio()
+    }
+
+    fun sendAnnouncement(loadClip: () -> ByteArray) {
+        val camera = endpoint ?: return
+        if (!camera.isFalconStream || announcement != null || state.value.status != ConnectionStatus.Live) return
+        val request = repository.request(camera)
+        announcement = request
+        mutableState.update { it.copy(sendingAnnouncement = true) }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { request.sendFalconAnnouncement(loadClip()) }
+                if (announcement === request) notify("Aviso enviado a la Falcon.")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (announcement === request) notify("No se pudo enviar el aviso a la Falcon.")
+            } finally {
+                if (announcement === request) {
+                    announcement = null
+                    mutableState.update { it.copy(sendingAnnouncement = false) }
+                }
+            }
+        }
     }
 
     fun toggleAudio() {

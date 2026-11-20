@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -16,7 +17,9 @@ import java.net.URL
 import java.net.URLEncoder
 import org.json.JSONObject
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
 
 internal class CameraEndpoint(
@@ -69,6 +72,7 @@ internal class CameraRepository {
         @Volatile private var cancelled = false
         @Volatile private var connection: HttpURLConnection? = null
         @Volatile private var audioSocket: Socket? = null
+        @Volatile private var talkSocket: DatagramSocket? = null
 
         fun stream(onFrame: (ByteArray) -> Unit) {
             val (active, delimiter) = openMjpeg()
@@ -109,6 +113,21 @@ internal class CameraRepository {
         }
 
         private fun streamFalconAudio(onPlaying: () -> Unit) {
+            withFalconAudioSocket { socket ->
+                CameraAudioPlayer.playFalcon(socket.getInputStream(), { !cancelled }, onPlaying)
+            }
+        }
+
+        fun sendFalconAnnouncement(adpcm: ByteArray) {
+            check(endpoint.isFalconStream)
+            DatagramSocket(null).use { socket ->
+                talkSocket = socket
+                if (cancelled) throw InterruptedIOException()
+                FalconTalk(socket, endpoint).send(adpcm)
+            }
+        }
+
+        private fun withFalconAudioSocket(useSocket: (Socket) -> Unit) {
             val origin = endpoint.origin
             val port = origin.port.takeIf { it != -1 } ?: origin.defaultPort
             val username = URLEncoder.encode(endpoint.user, "UTF-8")
@@ -123,20 +142,57 @@ internal class CameraRepository {
                 val request = "GET /audiostream.cgi?user=$username&pwd=$password HTTP/1.0\r\n" +
                     "Host: ${origin.host}:$port\r\n\r\n"
                 socket.getOutputStream().write(request.toByteArray(Charsets.US_ASCII))
-                CameraAudioPlayer.playFalcon(socket.getInputStream(), { !cancelled }, onPlaying)
+                useSocket(socket)
             } finally {
                 socket.close()
             }
         }
 
-        fun moveFalcon(direction: CameraDirection) {
+        fun moveFalcon(direction: CameraDirection, release: CountDownLatch = CountDownLatch(0)) {
             check(endpoint.isFalconStream)
             val user = URLEncoder.encode(endpoint.user, "UTF-8")
             val password = URLEncoder.encode(endpoint.password, "UTF-8")
-            val path = "/decoder_control.cgi?loginuse=$user&loginpas=$password" +
-                "&command=${direction.command}&onestep=1"
+            val path = "/decoder_control.cgi?loginuse=$user&loginpas=$password&onestep=0&command="
+            if (cancelled) throw InterruptedIOException()
             try {
-                val active = connect(URL(endpoint.origin, path), 4_000, null)
+                sendFalconMovement(path, direction.command)
+                if (!cancelled) {
+                    Thread.sleep(70)
+                    if (!cancelled) release.await(1_930, TimeUnit.MILLISECONDS)
+                }
+            } finally {
+                // The camera may have started even if the response was lost. Do not let
+                // cancelling the preview interrupt delivery of the stop command.
+                val stopCommand = direction.command + 1
+                stopFalconMovement(path, stopCommand)
+                // Repeat a confirmed stop after the motor has had time to process it.
+                try {
+                    Thread.sleep(120)
+                } finally {
+                    stopFalconMovement(path, stopCommand)
+                }
+            }
+        }
+
+        private fun stopFalconMovement(path: String, command: Int) {
+            repeat(3) {
+                try {
+                    sendFalconMovement(path, command)
+                    return
+                } catch (_: IOException) {
+                    // The stop command is safe to repeat if its response was lost.
+                }
+            }
+            sendFalconMovement(path, command)
+        }
+
+        private fun sendFalconMovement(path: String, command: Int) {
+            val active = URL(endpoint.origin, path + command).openConnection(Proxy.NO_PROXY) as HttpURLConnection
+            try {
+                active.instanceFollowRedirects = false
+                active.connectTimeout = 600
+                active.readTimeout = 600
+                active.useCaches = false
                 val status = active.responseCode
                 if (status != HttpURLConnection.HTTP_OK) throw CameraResponse(status)
                 val expected = """var result="ok";""".toByteArray(Charsets.US_ASCII)
@@ -146,7 +202,7 @@ internal class CameraRepository {
                     throw IOException("La cámara rechazó el movimiento.")
                 }
             } finally {
-                close()
+                active.disconnect()
             }
         }
 
@@ -209,6 +265,7 @@ internal class CameraRepository {
         fun close() {
             connection?.disconnect()
             audioSocket?.close()
+            talkSocket?.close()
         }
 
         private fun open(path: String, timeout: Int): HttpURLConnection {
