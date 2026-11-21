@@ -7,7 +7,6 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.IOException
 import java.io.InterruptedIOException
-import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -71,8 +70,7 @@ internal class CameraRepository {
     class Request(private val endpoint: CameraEndpoint) {
         @Volatile private var cancelled = false
         @Volatile private var connection: HttpURLConnection? = null
-        @Volatile private var audioSocket: Socket? = null
-        @Volatile private var talkSocket: DatagramSocket? = null
+        @Volatile private var falconSocket: Socket? = null
 
         fun stream(onFrame: (ByteArray) -> Unit) {
             val (active, delimiter) = openMjpeg()
@@ -113,38 +111,36 @@ internal class CameraRepository {
         }
 
         private fun streamFalconAudio(onPlaying: () -> Unit) {
-            withFalconAudioSocket { socket ->
+            withFalconSocket { socket ->
+                val request = "GET /audiostream.cgi?${falconCredentials()} HTTP/1.0\r\n" +
+                    "Host: ${endpoint.origin.host}:${socket.port}\r\n\r\n"
+                socket.getOutputStream().write(request.toByteArray(Charsets.US_ASCII))
                 CameraAudioPlayer.playFalcon(socket.getInputStream(), { !cancelled }, onPlaying)
             }
         }
 
         fun sendFalconAnnouncement(adpcm: ByteArray) {
             check(endpoint.isFalconStream)
-            DatagramSocket(null).use { socket ->
-                talkSocket = socket
-                if (cancelled) throw InterruptedIOException()
-                FalconTalk(socket, endpoint).send(adpcm)
+            withFalconSocket { socket ->
+                FalconTalk.send(socket, endpoint.origin.host, falconCredentials(), adpcm)
             }
         }
 
-        private fun withFalconAudioSocket(useSocket: (Socket) -> Unit) {
-            val origin = endpoint.origin
-            val port = origin.port.takeIf { it != -1 } ?: origin.defaultPort
+        private fun falconCredentials(): String {
             val username = URLEncoder.encode(endpoint.user, "UTF-8")
             val password = URLEncoder.encode(endpoint.password, "UTF-8")
-            val socket = Socket(Proxy.NO_PROXY)
-            audioSocket = socket
-            try {
+            return "user=$username&pwd=$password"
+        }
+
+        private fun withFalconSocket(useSocket: (Socket) -> Unit) {
+            val origin = endpoint.origin
+            val port = origin.port.takeIf { it != -1 } ?: origin.defaultPort
+            Socket(Proxy.NO_PROXY).use { socket ->
+                falconSocket = socket
                 if (cancelled) throw InterruptedIOException()
                 socket.soTimeout = 8_000
                 socket.connect(InetSocketAddress(origin.host.removeSurrounding("[", "]"), port), 6_000)
-                // The Falcon CGI returns binary frames directly on the socket, without HTTP headers.
-                val request = "GET /audiostream.cgi?user=$username&pwd=$password HTTP/1.0\r\n" +
-                    "Host: ${origin.host}:$port\r\n\r\n"
-                socket.getOutputStream().write(request.toByteArray(Charsets.US_ASCII))
                 useSocket(socket)
-            } finally {
-                socket.close()
             }
         }
 
@@ -264,8 +260,7 @@ internal class CameraRepository {
 
         fun close() {
             connection?.disconnect()
-            audioSocket?.close()
-            talkSocket?.close()
+            falconSocket?.close()
         }
 
         private fun open(path: String, timeout: Int): HttpURLConnection {

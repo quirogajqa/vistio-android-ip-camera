@@ -29,7 +29,7 @@ HTTP transmite el video y las credenciales sin cifrar. Si activas HTTPS en el se
 
 En **Agregar cámara**, activa **Cámara IP (MJPEG)** e introduce la URL completa del flujo HTTP o HTTPS. Para la WOO Falcon VCS001, usa `http://IP_DE_LA_CÁMARA:81/videostream.cgi` y escribe el usuario y la contraseña de la cámara en sus campos. El perfil admite video en directo y capturas. Para la Falcon, Vistio también admite el micrófono y los controles de movimiento. En **Configurar cámara** puedes guardar un recorte de vista 16:9.
 
-**Enviar aviso** reproduce un saludo pregrabado en el altavoz de la Falcon. Para enviarlo, el dispositivo con Vistio y la cámara deben estar en la misma subred IPv4. El audio del micrófono de la Falcon se filtra al escucharlo en Vistio.
+**Enviar aviso** reproduce un saludo pregrabado en el altavoz de la Falcon. Vistio envía el aviso por TCP a través de la conexión de video de la cámara. El audio del micrófono de la Falcon se filtra al escucharlo en Vistio.
 
 ## Modos de video
 
@@ -67,7 +67,7 @@ VISTIO_UPDATE_GITHUB_REPOSITORY=vistio-android-ip-camera
 Para publicar una versión, compila con un número de tres partes superior al anterior. Firma el APK con la misma clave que la última publicación y ejecuta:
 
 ```powershell
-.\gradlew.bat :app:assembleRelease "-PappVersionName=1.9.0"
+.\gradlew.bat :app:assembleRelease "-PappVersionName=1.9.1"
 .\tools\Prepare-Update.ps1 -ApkPath .\vistio-firmado.apk
 ```
 
