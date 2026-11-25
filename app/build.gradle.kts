@@ -5,7 +5,7 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
-val vistioVersionName = providers.gradleProperty("appVersionName").orElse("1.9.2").get()
+val vistioVersionName = providers.gradleProperty("appVersionName").orElse("1.9.3").get()
 val versionParts = Regex("(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]?)\\.(0|[1-9][0-9]?)")
     .matchEntire(vistioVersionName)?.groupValues?.drop(1)?.map(String::toLong)
     ?: error("appVersionName debe usar el formato MAYOR.MENOR.PARCHE.")

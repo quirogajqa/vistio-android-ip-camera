@@ -70,7 +70,7 @@ internal fun VistioSplash(onFinished: () -> Unit) {
             Image(
                 painter = painterResource(R.drawable.quirogaj_cat),
                 contentDescription = null,
-                modifier = Modifier.size(designHeight * (48f / 720f)),
+                modifier = Modifier.size(designHeight * (72.576f / 720f)),
             )
             Text(
                 text = stringResource(R.string.splash_author),
