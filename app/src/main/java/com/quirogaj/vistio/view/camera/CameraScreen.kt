@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -287,6 +288,17 @@ private fun PlayerCard(
     val live = state.status == ConnectionStatus.Live
     val profile = state.selectedProfile
     val canMove = remember(profile) { profile?.hasMovementControls() == true }
+    val portrait = !isTv && LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+    val sidePanelVisible = canMove && !state.fullscreen && !portrait
+    if (sidePanelVisible && !isTv) {
+        val view = LocalView.current
+        DisposableEffect(view) {
+            val wasKeepingScreenOn = view.keepScreenOn
+            view.keepScreenOn = true
+            onDispose { view.keepScreenOn = wasKeepingScreenOn }
+        }
+    }
+    val cropToWide = profile?.cropMjpegToWide == true && !sidePanelVisible
     val controlFocus = remember { FocusRequester() }
     val videoFocus = remember { FocusRequester() }
     var videoFocused by remember(state.fullscreen) { mutableStateOf(false) }
@@ -308,7 +320,7 @@ private fun PlayerCard(
                 val ratio = if (size != null) size.width.toFloat() / size.height else 16f / 9f
                 AvcSurface(ratio, onVideoSurface)
             } else {
-                Video(state.frame, Modifier.fillMaxSize(), profile?.cropMjpegToWide == true)
+                Video(state.frame, Modifier.fillMaxSize(), cropToWide)
             }
             if (state.fullscreen || (live && (!isTv || canMove))) {
                 val showVideoFocus = isTv && canMove && !state.fullscreen
@@ -393,7 +405,6 @@ private fun PlayerCard(
         CameraAudioStatus.Playing -> "Silenciar audio"
     }
     if (canMove && profile != null) {
-        val portrait = !isTv && LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
         val panel: @Composable (Modifier) -> Unit = { panelModifier ->
             Surface(
                 modifier = panelModifier,

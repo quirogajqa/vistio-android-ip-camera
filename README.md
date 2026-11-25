@@ -67,7 +67,7 @@ VISTIO_UPDATE_GITHUB_REPOSITORY=vistio-android-ip-camera
 Para publicar una versión, compila con un número de tres partes superior al anterior. Firma el APK con la misma clave que la última publicación y ejecuta:
 
 ```powershell
-.\gradlew.bat :app:assembleRelease "-PappVersionName=1.9.1"
+.\gradlew.bat :app:assembleRelease "-PappVersionName=1.9.2"
 .\tools\Prepare-Update.ps1 -ApkPath .\vistio-firmado.apk
 ```
 
